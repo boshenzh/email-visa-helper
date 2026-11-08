@@ -181,10 +181,10 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
     verified: true,
     createdAt: existing?.createdAt ?? now().toISOString(),
     updatedAt: now().toISOString(),
-    category: intake.category,
-    purposeBand: intake.facts.purposeBand,
-    reviewFlags: intake.reviewFlags,
-    missing: intake.missing,
+    category: intake.category === "OUT_OF_SCOPE" && existing ? existing.category : intake.category,
+    purposeBand: intake.category === "OUT_OF_SCOPE" && existing ? existing.purposeBand : intake.facts.purposeBand,
+    reviewFlags: intake.category === "OUT_OF_SCOPE" && existing ? existing.reviewFlags : intake.reviewFlags,
+    missing: intake.category === "OUT_OF_SCOPE" && existing ? existing.missing : intake.missing,
     synthetic: false,
     threadIds: [...new Set([...(existing?.threadIds ?? []), threadId])],
     messageIds: [...new Set([...(existing?.messageIds ?? []), parsed.messageId])],
@@ -193,9 +193,14 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
     vaultMode: config.vaultKey.length >= 16 ? "aes-256-gcm" as const : "plaintext-demo" as const,
   };
   store.writeCase(record);
-  store.writeVault(caseId, intake.facts);
+  if (!(intake.category === "OUT_OF_SCOPE" && existing)) store.writeVault(caseId, intake.facts);
   const artifactNames: string[] = [];
-  if (intake.category === "CLERICAL_APPLICANT_CONTROLLED") {
+  const refreshWorksheet =
+    intake.category === "CLERICAL_APPLICANT_CONTROLLED" ||
+    (intake.category !== "OUT_OF_SCOPE" &&
+      (existing?.artifactNames ?? []).includes("worksheet.md") &&
+      (intake.facts.purposeBand === "ordinary_visitor" || intake.reviewFlags.includes("minor")));
+  if (refreshWorksheet) {
     store.writeArtifact(caseId, "worksheet.md", renderWorksheet(intake.facts, record, snapshots));
     store.writeArtifact(caseId, "unknowns.md", renderUnknowns(intake.missing));
     store.writeArtifact(caseId, "source-ledger.md", renderSourceLedger(snapshots));
@@ -222,7 +227,6 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
     downloadPath = `/v1/artifacts/${token}`;
   }
   record.artifactNames = [...new Set([...(existing?.artifactNames ?? []), ...artifactNames])];
-  record.category = intake.category;
   store.writeCase(record);
   const reply = composeReply({
     snapshots,
@@ -383,6 +387,7 @@ function killedIntake(): Intake {
     exportRequested: false,
     asksPersonalVerdict: false,
     publicTopic: null,
+    mentionsFunds: false,
   };
 }
 

@@ -14,12 +14,16 @@ sha256sum -c email-visa-helper-synthetic-test.tar.gz.sha256
 # Mac
 shasum -a 256 -c email-visa-helper-synthetic-test.tar.gz.sha256
 
-mkdir -p /opt/email-visa-helper
-tar -xzf email-visa-helper-synthetic-test.tar.gz -C /opt/email-visa-helper --strip-components=1
-cd /opt/email-visa-helper
+# Unpack beside the current release. Do not delete /opt/email-visa-helper.
+# That directory holds shared/runtime.env, shared/data, and prior releases.
+COMMIT=replace-with-the-commit-in-RELEASE.json
+mkdir -p /opt/email-visa-helper/releases/"$COMMIT"
+tar -xzf email-visa-helper-synthetic-test.tar.gz -C /opt/email-visa-helper/releases/"$COMMIT" --strip-components=1
+cd /opt/email-visa-helper/releases/"$COMMIT"
 npm ci
-cp .env.example .env
 ```
+
+Do not run `rm -rf /opt/email-visa-helper`. Do not remove `shared/`, prior release directories, or the external Docker network `visa-test-ingress`. The archive does not contain `runtime.env`. The running test profile stays in `/opt/email-visa-helper/shared/runtime.env`.
 
 Edit `.env` on that machine. Do not commit it.
 
@@ -40,9 +44,9 @@ OPERATOR_TOKEN=replace-with-a-different-long-random-string
 ## Start
 
 ```bash
-cd /opt/email-visa-helper
+cd /opt/email-visa-helper/releases/"$COMMIT"
 set -a
-. ./.env
+. /opt/email-visa-helper/shared/runtime.env
 set +a
 node --experimental-strip-types src/index.ts
 ```
@@ -75,8 +79,8 @@ DELIVERY_MODE=preview
 `TEST_SENDER_ALLOWLIST` must contain at least one real mailbox. The synthetic HTTP route still does not take email from the request.
 
 ```bash
-cd /opt/email-visa-helper
-set -a && . ./.env && set +a
+cd /opt/email-visa-helper/releases/"$COMMIT"
+set -a && . /opt/email-visa-helper/shared/runtime.env && set +a
 node --experimental-strip-types src/synthetic-cli.ts fees
 ```
 
@@ -103,16 +107,18 @@ Leave the Email Routing rule disabled until Zone Settings permission allows a re
 
 ## Redeploy the existing VPS container
 
-Keep the Docker network `visa-test-ingress`. Do not remove it.
+Keep `/opt/email-visa-helper/shared`, every prior release directory, and the Docker network `visa-test-ingress`. Do not remove them. Do not run `rm -rf /opt/email-visa-helper`.
+
+The current restricted test stays as it is: `DEPLOYMENT_PROFILE=synthetic_test`, `AGENT_MODE=live`, `AUTO_REPLY=off`, `DELIVERY_MODE=preview`, `PUBLIC_LAUNCH=blocked`. This archive does not change that file.
 
 ```bash
 docker network inspect visa-test-ingress
-cd /opt/email-visa-helper
+cd /opt/email-visa-helper/releases/"$COMMIT"
 docker compose -f deploy/docker-compose.vps.yml up -d --build
 docker inspect visa-test-ingress --format '{{.Name}}'
 ```
 
-`deploy/docker-compose.vps.yml` joins that external network. It does not create a replacement network and it does not contain credentials. The host `.env` supplies `DEPLOYMENT_PROFILE`, the allowlist, and tokens. Public launch stays blocked. Sending stays off unless that `.env` also sets the general-info switches.
+`deploy/docker-compose.vps.yml` joins the existing external network. It does not create a replacement network and it does not contain credentials. It reads `/opt/email-visa-helper/shared/runtime.env` and stores cases in `/opt/email-visa-helper/shared/data`. Recreating the container must leave it on `visa-test-ingress`. Do not run `docker network rm visa-test-ingress` and do not prune volumes. Public launch stays blocked. Sending stays off unless that env file also sets the general-info switches, which the current test file does not.
 
 Sending from the Node process stays off until you also set `AUTO_REPLY=general_info`, `DELIVERY_MODE=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_EMAIL_API_TOKEN`. Even then, only a general-information draft goes out, and only to the allowlisted authenticated sender. Worksheets and review cases stay in the outbox.
 

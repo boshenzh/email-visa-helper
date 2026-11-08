@@ -1,12 +1,13 @@
-# Redeploy onto the existing Docker network. Do not create or remove it.
-# Credentials stay in the host .env. This file has none.
+# Recreate the container on the existing external network.
+# Do not remove visa-test-ingress, /opt/email-visa-helper/shared, or prior releases.
+# Credentials stay in shared/runtime.env. This file has none.
 services:
   visa-agent:
     build:
       context: ..
       dockerfile: Dockerfile
     env_file:
-      - path: ../.env
+      - path: /opt/email-visa-helper/shared/runtime.env
         required: true
     environment:
       DATA_DIR: /data
@@ -16,7 +17,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
-      - visa-data:/data
+      - /opt/email-visa-helper/shared/data:/data
     networks:
       - visa-test-ingress
     read_only: true
@@ -36,6 +37,3 @@ networks:
   visa-test-ingress:
     external: true
     name: visa-test-ingress
-
-volumes:
-  visa-data:
