@@ -19,6 +19,7 @@
     "MAILBOX": "visa@boshen.dev",
     "RUNTIME_URL": "http://127.0.0.1:8080/v1/email/inbound",
     "AUTO_REPLY": "off",
-    "OPERATOR_FORWARD_ADDRESS": ""
+    "OPERATOR_FORWARD_ADDRESS": "",
+    "OPERATOR_FORWARD_VERIFIED": "false"
   }
 }

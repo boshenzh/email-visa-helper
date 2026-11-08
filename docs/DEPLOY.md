@@ -91,10 +91,29 @@ curl -s http://127.0.0.1:8080/v1/synthetic/explain \
 
 Allowed topic ids: `fees`, `eta`, `documents`, `processing`, `visitor`, `routes`, `translations`, `identity`, `checker`. A body that also contains `text`, `email`, `messages`, or `prompt` is rejected. On `dry_run` the route is closed. If the key is missing the route returns `no_api_key` and does not invent an answer.
 
-## Inbound mail, still limited to the allowlist
+## Inbound worker
 
-The Cloudflare worker in `cloudflare/` only forwards a normalized event. It does not send mail. Point it at this process only after the allowlist is set. A sender who is not on `TEST_SENDER_ALLOWLIST`, or whose `From` address did not pass DMARC at `mx.cloudflare.net`, is not stored and does not call the model. `Reply-To` and the message body cannot choose a recipient.
+The worker accepts only the canonical mailbox in `MAILBOX` (default `visa@boshen.dev`), including a display name and a subaddress such as `visa+note@boshen.dev`. `notvisa@boshen.dev` and `visa@boshen.dev.example` do not match. A mismatch calls `message.setReject` and does not call `forward`.
 
-Sending stays off until you also set `AUTO_REPLY=general_info`, `DELIVERY_MODE=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_EMAIL_API_TOKEN`. Even then, only a general-information draft goes out, and only to the allowlisted authenticated sender. Worksheets and review cases stay in the outbox.
+Cloudflare’s email handler documentation, updated 30 October 2026, describes `message.setReject(reason)` as a permanent SMTP error. It does not document a transient SMTP response or an automatic retry of `email()`. Do not expect a thrown exception to defer the message; this worker does not use throw as a retry mechanism.
+
+The handler waits for the runtime response. A non-2xx status, a timeout, or a network error is a delivery failure. If `OPERATOR_FORWARD_VERIFIED` is exactly `true` and `OPERATOR_FORWARD_ADDRESS` is a different canonical address, the worker first forwards the original message there. That address must already be a verified destination in the Cloudflare account; the flag is the operator’s confirmation, and the worker will not forward without it. If that forward is not authorized, or it throws, the worker calls `setReject` so the message is not accepted and dropped.
+
+Leave the Email Routing rule disabled until Zone Settings permission allows a review. Do not change MX, SPF, DKIM, or other rules while unpacking this archive.
+
+## Redeploy the existing VPS container
+
+Keep the Docker network `visa-test-ingress`. Do not remove it.
+
+```bash
+docker network inspect visa-test-ingress
+cd /opt/email-visa-helper
+docker compose -f deploy/docker-compose.vps.yml up -d --build
+docker inspect visa-test-ingress --format '{{.Name}}'
+```
+
+`deploy/docker-compose.vps.yml` joins that external network. It does not create a replacement network and it does not contain credentials. The host `.env` supplies `DEPLOYMENT_PROFILE`, the allowlist, and tokens. Public launch stays blocked. Sending stays off unless that `.env` also sets the general-info switches.
+
+Sending from the Node process stays off until you also set `AUTO_REPLY=general_info`, `DELIVERY_MODE=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_EMAIL_API_TOKEN`. Even then, only a general-information draft goes out, and only to the allowlisted authenticated sender. Worksheets and review cases stay in the outbox.
 
 Do not change existing MX, SPF, DKIM, or other routing rules as part of unpacking this archive. Public launch remains blocked. This is not a legal clearance to give personalised immigration advice.
