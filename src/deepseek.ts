@@ -86,8 +86,13 @@ export function acceptGeneralExplanation(text: string, snapshots: Snapshots): { 
     return { ok: false, reason: "personal_conclusion" };
   }
   const allowed = new Set<number>(Object.values(snapshots.feesGbp));
-  for (const match of trimmed.matchAll(/£\s?(\d+(?:\.\d+)?)/g)) {
-    if (!allowed.has(Number(match[1]))) return { ok: false, reason: "unstated_fee" };
+  for (const match of trimmed.matchAll(/£\s?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?/g)) {
+    const end = (match.index ?? 0) + match[0].length;
+    const next = trimmed[end] ?? "";
+    const continues = next === "," ? /\d/.test(trimmed[end + 1] ?? "") : /\d/.test(next);
+    if (continues) return { ok: false, reason: "unstated_fee" };
+    const numeric = Number(match[0].replace(/£\s?|,/g, ""));
+    if (!Number.isFinite(numeric) || !allowed.has(numeric)) return { ok: false, reason: "unstated_fee" };
   }
   return { ok: true, text: trimmed };
 }

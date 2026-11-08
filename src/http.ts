@@ -68,12 +68,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, runti
       snapshots: loadSnapshots(runtime.config),
     });
     for (const request of loop.requests) runtime.store.logModel(request);
+    const detail = loop.error === "empty" || loop.error === "identifier" || loop.error === "personal_conclusion" || loop.error === "unstated_fee" ? loop.error : undefined;
     sendJson(res, loop.explanation ? 200 : 422, {
       ok: Boolean(loop.explanation),
       topic,
       explanation: loop.explanation,
       stopped: loop.stopped,
       reason: loop.reason,
+      ...(detail ? { detail } : {}),
       modelRequests: loop.requests.length,
       toolNames: loop.toolNames,
     });

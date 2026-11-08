@@ -1,6 +1,19 @@
 import type { Snapshots } from "./knowledge.ts";
 import type { CaseRecord, VaultFacts } from "./types.ts";
 
+function stillBlank(facts: VaultFacts, missing: readonly string[]): string {
+  const required = missing.length
+    ? ["Required labels still blank:", ...missing.map((item) => `- ${item}`), "A blank required label is not filled by this worksheet."]
+    : ["Required intake labels are filled. That is not an eligibility finding."];
+  const optional: string[] = [];
+  if (!facts.currentLocation.trim()) optional.push("- current location");
+  if (!facts.fundingNote.trim()) optional.push("- who pays");
+  const optionalLines = optional.length
+    ? ["Optional labels still not provided. They are not required intake labels:", ...optional]
+    : ["Optional current location and who pays were provided."];
+  return [...required, ...optionalLines].join("\n");
+}
+
 function line(label: string, value: string): string {
   return `- ${label}: ${value.trim() ? value.trim() : "[not provided]"}`;
 }
@@ -34,7 +47,7 @@ export function renderWorksheet(facts: VaultFacts, record: CaseRecord, snapshots
     "Passport numbers and bank details are not copied into this worksheet.",
     "",
     "## Still blank",
-    record.missing.length ? record.missing.map((item) => `- ${item}`).join("\n") : "- None of the intake labels are blank. That is not an eligibility finding.",
+    stillBlank(facts, record.missing),
     "",
     "## General published evidence menu",
     "This is the same public menu for every reader. It is not a list of what you personally should file.",

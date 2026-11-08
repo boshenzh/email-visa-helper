@@ -22,7 +22,10 @@ Official pages were read on 2026-11-08 (Asia/Shanghai). Recheck them. They are n
 Passport numbers and bank details are not copied into this worksheet.
 
 ## Still blank
-- None of the intake labels are blank. That is not an eligibility finding.
+Required intake labels are filled. That is not an eligibility finding.
+Optional labels still not provided. They are not required intake labels:
+- current location
+- who pays
 
 ## General published evidence menu
 This is the same public menu for every reader. It is not a list of what you personally should file.

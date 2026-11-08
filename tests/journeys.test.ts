@@ -60,6 +60,11 @@ test("same-case follow-up keeps earlier facts and writes the later labeled answe
   assert.match(worksheet, /Criminal or safeguarding issue: no/);
   assert.match(worksheet, /visa on 2026-11-01/);
   assert.doesNotMatch(worksheet, /Arrival date: \[not provided\]/);
+  assert.match(worksheet, /Required intake labels are filled/);
+  assert.match(worksheet, /Optional labels still not provided/);
+  assert.match(worksheet, /- current location/);
+  assert.match(worksheet, /- who pays/);
+  assert.doesNotMatch(worksheet, /None of the intake labels are blank/);
   assert.match(second.reply, /worksheet/);
   assert.ok(second.reply.length < 2200, `worksheet reply too long: ${second.reply.length}`);
 

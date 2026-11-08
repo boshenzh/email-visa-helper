@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config.ts";
-import { runSyntheticPublicAdapter, buildChatBody, assertNoApplicantLeak, acceptGeneralExplanation } from "../src/deepseek.ts";
+import { runSyntheticPublicAdapter, runPublicTopicLoop, buildChatBody, assertNoApplicantLeak, acceptGeneralExplanation } from "../src/deepseek.ts";
 import { cloudflareRestTransport, dispatchOutbox } from "../src/mail.ts";
 import { createServer } from "../src/http.ts";
 import { approveOutbox, deleteAuthorized } from "../src/inbound.ts";
@@ -435,6 +435,91 @@ test("synthetic DeepSeek adapter drops reasoning, retries, caps cost, and blocks
   assert.equal(acceptGeneralExplanation("You qualify for this visa.", loadSnapshots(config)).ok, false);
   assert.equal(acceptGeneralExplanation("The snapshot lists £135.", loadSnapshots(config)).ok, true);
   assert.equal(acceptGeneralExplanation("The fee is £1.", loadSnapshots(config)).ok, false);
+});
+
+test("grouped snapshot fees pass and personal or unsupported fee text still fails", async () => {
+  const snapshots = loadSnapshots(loadConfig({}));
+  const comma = [
+    "Visitor fees from the snapshot.",
+    "Standard Visitor visa, up to 6 months: £135.",
+    "Long-term visitor visas: 2 years £506, 5 years £903, 10 years £1,128.",
+    "ETA: £20.",
+    "These are published figures, not a quote for one person.",
+    "This wording is AI-generated and is not professional advice.",
+  ].join("\n");
+  assert.equal(acceptGeneralExplanation(comma, snapshots).ok, true);
+  assert.equal(acceptGeneralExplanation("Long-term visitor visas: 2 years £506, 5 years £903, 10 years £1128. ETA: £20. Standard Visitor: £135.", snapshots).ok, true);
+  assert.equal(acceptGeneralExplanation(`${comma}\nYou need a visa.`, snapshots).ok, false);
+  assert.equal(acceptGeneralExplanation("The fee is £5,000.", snapshots).ok, false);
+  assert.equal(acceptGeneralExplanation("The fee is £135,00.", snapshots).ok, false);
+  assert.equal(acceptGeneralExplanation("Write to fees@example.com about £135.", snapshots).ok, false);
+  const config = loadConfig({}, { deepseekApiKey: "sk-test-not-a-real-key" });
+  let round = 0;
+  const loop = await runPublicTopicLoop({
+    topic: "fees",
+    config,
+    apiKey: "sk-test-not-a-real-key",
+    snapshots,
+    transport: (async () => {
+      round += 1;
+      if (round === 1) {
+        return Response.json({
+          choices: [{ message: { content: null, tool_calls: [{ id: "fee-1", type: "function", function: { name: "lookup_official", arguments: "{\"topic\":\"fees\"}" } }] } }],
+          usage: { prompt_tokens: 10, completion_tokens: 8 },
+        });
+      }
+      return Response.json({
+        choices: [{ message: { content: comma, tool_calls: [] } }],
+        usage: { prompt_tokens: 20, completion_tokens: 30 },
+      });
+    }) as typeof fetch,
+  });
+  assert.equal(loop.stopped, "completed");
+  assert.equal(loop.modelCalls, 2);
+  assert.deepEqual(loop.toolNames, ["lookup_official"]);
+  assert.match(loop.explanation ?? "", /£1,128/);
+  const rejected = await runPublicTopicLoop({
+    topic: "fees",
+    config,
+    apiKey: "sk-test-not-a-real-key",
+    snapshots,
+    transport: (async () => Response.json({
+      choices: [{ message: { content: "You need a visa. The published fee is £135.", tool_calls: [] } }],
+      usage: { prompt_tokens: 5, completion_tokens: 8 },
+    })) as typeof fetch,
+  });
+  assert.equal(rejected.stopped, "output_rejected");
+  assert.equal(rejected.explanation, null);
+  assert.equal(rejected.error, "personal_conclusion");
+
+  const runtime = tempRuntime({
+    profile: "synthetic_test",
+    testSenderAllowlist: ["operator@example.com"],
+    deepseekApiKey: "sk-test-not-a-real-key",
+  });
+  runtime.modelTransport = (async () => Response.json({
+    choices: [{ message: { content: "You need a visa. The published fee is £135.", tool_calls: [] } }],
+    usage: { prompt_tokens: 5, completion_tokens: 8 },
+  })) as typeof fetch;
+  const server = createServer(runtime);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no port");
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/synthetic/explain`, {
+      method: "POST",
+      headers: { authorization: "Bearer operator-token-for-tests-0123456789", "content-type": "application/json" },
+      body: JSON.stringify({ topic: "fees" }),
+    });
+    const payload = (await response.json()) as { explanation: string | null; detail?: string; stopped: string };
+    assert.equal(response.status, 422);
+    assert.equal(payload.explanation, null);
+    assert.equal(payload.stopped, "output_rejected");
+    assert.equal(payload.detail, "personal_conclusion");
+    assert.equal(JSON.stringify(payload).includes("You need a visa"), false);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
 });
 
 test("a public fee question runs the tool protocol and leaves the email body out of the request", async () => {
