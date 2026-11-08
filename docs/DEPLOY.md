@@ -9,7 +9,11 @@ No secrets are in the archive. `npm ci` on the host installs the lockfile. Node.
 Copy `email-visa-helper-synthetic-test.tar.gz` and its `.sha256` file to the machine. Check the checksum, then unpack:
 
 ```bash
+# Linux or the VPS
 sha256sum -c email-visa-helper-synthetic-test.tar.gz.sha256
+# Mac
+shasum -a 256 -c email-visa-helper-synthetic-test.tar.gz.sha256
+
 mkdir -p /opt/email-visa-helper
 tar -xzf email-visa-helper-synthetic-test.tar.gz -C /opt/email-visa-helper --strip-components=1
 cd /opt/email-visa-helper
