@@ -126,6 +126,14 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
     return finish(store, parsed.messageId, { ...emptyResult("suppressed", reply), outboxId: draft.id, reply, stopped: "kill_switch" });
   }
   const sender = authenticateSender(parsed.authenticationResults, parsed.headerFrom, config.mailbox);
+  if (config.profile === "synthetic_test" && (!sender.ok || !config.testSenderAllowlist.includes(sender.email))) {
+    store.log("sender_not_allowlisted", { verified: sender.ok });
+    return finish(store, parsed.messageId, {
+      ...emptyResult("rejected", "This test deployment only accepts the operator allowlist. Nothing was stored and the model was not called.\n"),
+      modelReason: "sender_not_allowlisted",
+      stopped: "not_allowlisted",
+    });
+  }
   const caseId = sender.ok ? store.caseIdForSender(sender.email) : store.quarantineId(parsed.messageId);
   const existing = sender.ok ? store.readCase(caseId) : null;
   const text = publicText(parsed);

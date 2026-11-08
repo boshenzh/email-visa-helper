@@ -1,5 +1,7 @@
 import http from "node:http";
+import { runPublicTopicLoop } from "./deepseek.ts";
 import { approveOutbox, deleteAuthorized, handleInbound, type Runtime } from "./inbound.ts";
+import { loadSnapshots, OFFICIAL_TOPICS, type OfficialTopic } from "./knowledge.ts";
 import { sha256, tokensMatch } from "./security.ts";
 import type { Store } from "./store.ts";
 
@@ -17,12 +19,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, runti
   if (req.method === "GET" && url.pathname === "/health") {
     sendJson(res, 200, {
       ok: true,
+      profile: runtime.config.profile,
       mode: runtime.config.mode,
       autoReply: runtime.config.autoReply,
       delivery: runtime.config.deliveryMode,
       publicLaunch: runtime.config.publicLaunch,
       modelCallsOnInbound: Boolean(runtime.modelTransport),
       emailSending: Boolean(runtime.mailTransport),
+      testSenderAllowlistCount: runtime.config.testSenderAllowlist.length,
     });
     return;
   }
@@ -34,6 +38,45 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, runti
     const body = runtime.store.readArtifact(record.caseId, record.artifact);
     res.writeHead(200, { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" });
     res.end(body);
+    return;
+  }
+  if (req.method === "POST" && url.pathname === "/v1/synthetic/explain") {
+    if (runtime.config.profile !== "synthetic_test") return sendJson(res, 403, { ok: false, error: "synthetic_test profile required" });
+    if (!authorized(req, runtime.config.operatorToken)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+    const raw = await readBody(req);
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return sendJson(res, 400, { ok: false, error: "invalid json" });
+    }
+    if ("text" in parsed || "email" in parsed || "messages" in parsed || "prompt" in parsed) {
+      return sendJson(res, 400, { ok: false, error: "applicant text is not accepted" });
+    }
+    const topic = parsed.topic;
+    if (typeof topic !== "string" || !OFFICIAL_TOPICS.includes(topic as OfficialTopic)) {
+      return sendJson(res, 400, { ok: false, error: "topic must be an official topic id" });
+    }
+    if (!runtime.modelTransport || !runtime.config.deepseekApiKey) {
+      return sendJson(res, 503, { ok: false, stopped: "no_api_key", topic });
+    }
+    const loop = await runPublicTopicLoop({
+      topic: topic as OfficialTopic,
+      config: runtime.config,
+      apiKey: runtime.config.deepseekApiKey,
+      transport: runtime.modelTransport,
+      snapshots: loadSnapshots(runtime.config),
+    });
+    for (const request of loop.requests) runtime.store.logModel(request);
+    sendJson(res, loop.explanation ? 200 : 422, {
+      ok: Boolean(loop.explanation),
+      topic,
+      explanation: loop.explanation,
+      stopped: loop.stopped,
+      reason: loop.reason,
+      modelRequests: loop.requests.length,
+      toolNames: loop.toolNames,
+    });
     return;
   }
   if (req.method === "POST" && url.pathname === "/v1/email/inbound") {

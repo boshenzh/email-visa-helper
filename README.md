@@ -17,7 +17,9 @@ This repository is a demo. It is **not** cleared for public launch and it is **n
 | Personalised eligibility or representations | **Blocked** until legal review |
 | “Production safe” or “regex makes any PII safe” | **Not claimed** |
 
-What runs when a transport and API key are present: a general question is reduced locally to a topic id such as `fees`. The model sees `topic: fees`, calls `lookup_official`, and may write a general explanation. Local code then adds questions and any worksheet. What does not run: the raw email, names, addresses, and case facts are not part of that request. If a single public topic cannot be chosen, the model is not called.
+The default profile is `dry_run`. It refuses a live model and refuses sending. `synthetic_test` is the restricted test deployment: it will not start without `TEST_SENDER_ALLOWLIST`, and only those DMARC-authenticated senders are stored or answered. Install steps that do not need a git clone are in [docs/DEPLOY.md](docs/DEPLOY.md).
+
+What runs when that test profile, a transport, and an API key are present: a general question is reduced locally to a topic id such as `fees`. The model sees `topic: fees`, calls `lookup_official`, and may write a general explanation. Local code then adds questions and any worksheet. `POST /v1/synthetic/explain` does the same for one topic id, with the operator token, and does not accept applicant text. What does not run: the raw email, names, addresses, and case facts are not part of that request. If a single public topic cannot be chosen, or the sender is not on the allowlist, the model is not called.
 
 ## What a reply is
 

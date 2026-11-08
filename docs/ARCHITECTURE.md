@@ -19,8 +19,12 @@ The only user message is `topic: <id>`. The only tool is `lookup_official`. Its 
 
 The final text is kept only if it does not state a personal conclusion and any `£` amount is one of the snapshot fees. Local code then adds the disclosure, the snapshot block, questions, and a worksheet. A failed check drops the model text and the local snapshot remains.
 
+`DEPLOYMENT_PROFILE` defaults to `dry_run`. That profile refuses `AGENT_MODE=live` and refuses sending, so a copied `.env` cannot turn the public service on. `synthetic_test` refuses to start until `TEST_SENDER_ALLOWLIST` has at least one email. In that profile, intake, model calls, and sending happen only for the DMARC-authenticated `From` address on that list. `Reply-To` and addresses typed in the body are not recipients. `PUBLIC_LAUNCH` stays `blocked`.
+
 The loop runs for an inbound message only when all of these are true:
 
+- `DEPLOYMENT_PROFILE=synthetic_test` and `AGENT_MODE=live` when the process itself attaches the network client
+- the sender is on `TEST_SENDER_ALLOWLIST`
 - the local classifier picked one public topic
 - the message is not out of scope, not a review case, and not an injected or account-action message
 - `modelTransport` is set and `DEEPSEEK_API_KEY` is non-empty

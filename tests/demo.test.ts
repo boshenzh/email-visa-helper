@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -253,7 +254,7 @@ test("passport and bank numbers are not stored, and the vault can be encrypted",
 });
 
 test("http auth, export token, sweep, and live mode still make no model call", async () => {
-  const runtime = tempRuntime({ mode: "live", caseTtlDays: 0 });
+  const runtime = tempRuntime({ caseTtlDays: 0 });
   const server = createServer(runtime);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
   const address = server.address();
@@ -317,7 +318,15 @@ test("config rejects live-send switches and unknown model ids", () => {
   assert.throws(() => loadConfig({ DEEPSEEK_MODEL: "deepseek-chat" }), /DEEPSEEK_MODEL/);
   assert.throws(() => loadConfig({ DEEPSEEK_THINKING: "enabled" }), /DEEPSEEK_THINKING/);
   assert.throws(() => loadConfig({ DELIVERY_MODE: "smtp" }), /DELIVERY_MODE/);
-  assert.equal(loadConfig({ AUTO_REPLY: "general_info", DELIVERY_MODE: "cloudflare" }).autoReply, "general_info");
+  assert.throws(() => loadConfig({ AUTO_REPLY: "general_info", DELIVERY_MODE: "cloudflare" }), /dry_run refuses/);
+  assert.throws(() => loadConfig({ AGENT_MODE: "live" }), /dry_run refuses/);
+  assert.throws(() => loadConfig({ DEPLOYMENT_PROFILE: "synthetic_test" }), /TEST_SENDER_ALLOWLIST/);
+  const testProfile = loadConfig(
+    { DEPLOYMENT_PROFILE: "synthetic_test", TEST_SENDER_ALLOWLIST: "Ops <ops@example.com>" },
+    {},
+  );
+  assert.deepEqual(testProfile.testSenderAllowlist, ["ops@example.com"]);
+  assert.equal(testProfile.publicLaunch, "blocked");
 });
 
 test("a hostile tool call cannot choose a recipient, and the model never sees the applicant text", async () => {
@@ -356,7 +365,13 @@ test("a hostile tool call cannot choose a recipient, and the model never sees th
 });
 
 test("synthetic DeepSeek adapter drops reasoning, retries, caps cost, and blocks applicant text", async () => {
-  const config = loadConfig({}, { mode: "live", maxCostUsd: 0.05, deepseekModel: "deepseek-flash" });
+  const config = loadConfig({}, {
+    profile: "synthetic_test",
+    testSenderAllowlist: ["synthetic@example.com"],
+    mode: "live",
+    maxCostUsd: 0.05,
+    deepseekModel: "deepseek-flash",
+  });
   const blocked = await runSyntheticPublicAdapter({
     config,
     apiKey: "",
@@ -489,21 +504,36 @@ test("email sending retries, stays idempotent, and auto-reply is limited to gene
   const draft = runtime.store.readOutbox(created.outboxId ?? "");
   assert.equal(draft?.status, "draft");
   assert.equal(draft?.to, "synthetic@example.com");
-  const sent = await dispatchOutbox(runtime.store, draft!, transport, "visa@boshen.dev");
+  const allow = ["synthetic@example.com"];
+  const sent = await dispatchOutbox(runtime.store, draft!, transport, "visa@boshen.dev", allow);
   assert.equal(sent.status, "sent");
   assert.equal(sent.providerMessageId, "cf-msg-1");
   assert.equal(fetches, 2);
-  const again = await dispatchOutbox(runtime.store, sent, transport, "visa@boshen.dev");
+  const again = await dispatchOutbox(runtime.store, sent, transport, "visa@boshen.dev", allow);
   assert.equal(again.providerMessageId, "cf-msg-1");
   assert.equal(fetches, 2);
 
   const permanent = cloudflareRestTransport("acct-test", "secret-token", async () => new Response("bad", { status: 400 }));
   const other = await send(runtime, { messageId: "dispatch-fail", text: "What is the Standard Visitor fee?" });
-  const failed = await dispatchOutbox(runtime.store, runtime.store.readOutbox(other.outboxId ?? "")!, permanent, "visa@boshen.dev");
+  const failed = await dispatchOutbox(runtime.store, runtime.store.readOutbox(other.outboxId ?? "")!, permanent, "visa@boshen.dev", allow);
   assert.equal(failed.status, "failed");
+  const tampered = runtime.store.readOutbox(created.outboxId ?? "")!;
+  tampered.to = "attacker@evil.example";
+  tampered.status = "draft";
+  tampered.providerMessageId = null;
+  runtime.store.writeOutbox(tampered);
+  let blockedCalls = 0;
+  const blocked = await dispatchOutbox(runtime.store, tampered, { async send() { blockedCalls += 1; return { messageId: "no" }; } }, "visa@boshen.dev", allow);
+  assert.equal(blocked.status, "draft");
+  assert.equal(blockedCalls, 0);
 
   const sentTo: string[] = [];
-  const auto = tempRuntime({ autoReply: "general_info", deliveryMode: "cloudflare" });
+  const auto = tempRuntime({
+    profile: "synthetic_test",
+    testSenderAllowlist: ["synthetic@example.com"],
+    autoReply: "general_info",
+    deliveryMode: "cloudflare",
+  });
   auto.mailTransport = {
     async send(message) {
       sentTo.push(message.to);
@@ -516,4 +546,97 @@ test("email sending retries, stays idempotent, and auto-reply is limited to gene
   const personal = await send(auto, { messageId: "auto-personal", text: "Am I eligible for a visitor visa?" });
   assert.equal(auto.store.readOutbox(personal.outboxId ?? "")?.status, "draft");
   assert.deepEqual(sentTo, ["synthetic@example.com"]);
+});
+
+test("synthetic_test allowlist gates intake and the operator topic endpoint", async () => {
+  const runtime = tempRuntime({
+    profile: "synthetic_test",
+    testSenderAllowlist: ["synthetic@example.com"],
+    deepseekApiKey: "sk-test-not-a-real-key",
+    mode: "live",
+  });
+  const outsider = await send(runtime, {
+    messageId: "outsider",
+    headerFrom: "Outsider <outsider@example.com>",
+    text: "What is the Standard Visitor fee?",
+  });
+  assert.equal(outsider.action, "rejected");
+  assert.equal(outsider.modelReason, "sender_not_allowlisted");
+  assert.equal(outsider.modelRequests, 0);
+  assert.equal(runtime.store.readCase(runtime.store.caseIdForSender("outsider@example.com")), null);
+
+  let rounds = 0;
+  runtime.modelTransport = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    rounds += 1;
+    assert.equal(body.messages[1].content, "topic: fees");
+    if (rounds === 1) {
+      return Response.json({
+        choices: [{ message: { content: null, tool_calls: [{ id: "op-1", type: "function", function: { name: "lookup_official", arguments: "{\"topic\":\"fees\"}" } }] } }],
+        usage: { prompt_tokens: 8, completion_tokens: 6 },
+      });
+    }
+    return Response.json({
+      choices: [{ message: { content: "The published snapshot lists a Standard Visitor fee of £135. This is general information.", tool_calls: [] } }],
+      usage: { prompt_tokens: 20, completion_tokens: 12 },
+    });
+  }) as typeof fetch;
+  const server = createServer(runtime);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no port");
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const health = (await (await fetch(`${base}/health`)).json()) as { profile: string; publicLaunch: string; testSenderAllowlistCount: number };
+    assert.equal(health.profile, "synthetic_test");
+    assert.equal(health.publicLaunch, "blocked");
+    assert.equal(health.testSenderAllowlistCount, 1);
+    assert.equal((await fetch(`${base}/v1/synthetic/explain`, { method: "POST", body: "{}" })).status, 401);
+    const leaked = await fetch(`${base}/v1/synthetic/explain`, {
+      method: "POST",
+      headers: { authorization: "Bearer operator-token-for-tests-0123456789", "content-type": "application/json" },
+      body: JSON.stringify({ topic: "fees", text: "Nationality: ZZ-NATIONALITY-TOKEN" }),
+    });
+    assert.equal(leaked.status, 400);
+    const explained = await fetch(`${base}/v1/synthetic/explain`, {
+      method: "POST",
+      headers: { authorization: "Bearer operator-token-for-tests-0123456789", "content-type": "application/json" },
+      body: JSON.stringify({ topic: "fees" }),
+    });
+    const payload = (await explained.json()) as { ok: boolean; explanation: string; modelRequests: number };
+    assert.equal(explained.status, 200);
+    assert.equal(payload.ok, true);
+    assert.match(payload.explanation, /£135/);
+    assert.equal(payload.modelRequests, 2);
+    assert.equal(JSON.stringify(payload).includes("ZZ-NATIONALITY-TOKEN"), false);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+
+  const dry = tempRuntime();
+  const dryServer = createServer(dry);
+  await new Promise<void>((resolve) => dryServer.listen(0, "127.0.0.1", () => resolve()));
+  const dryAddress = dryServer.address();
+  if (!dryAddress || typeof dryAddress === "string") throw new Error("no port");
+  try {
+    const closed = await fetch(`http://127.0.0.1:${dryAddress.port}/v1/synthetic/explain`, {
+      method: "POST",
+      headers: { authorization: "Bearer operator-token-for-tests-0123456789", "content-type": "application/json" },
+      body: JSON.stringify({ topic: "fees" }),
+    });
+    assert.equal(closed.status, 403);
+  } finally {
+    await new Promise<void>((resolve, reject) => dryServer.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test("synthetic cli refuses the dry-run profile and does not need a key to fail closed", async () => {
+  const child = spawn(process.execPath, ["--experimental-strip-types", "src/synthetic-cli.ts", "fees"], {
+    cwd: root,
+    env: { PATH: process.env.PATH ?? "", DEPLOYMENT_PROFILE: "dry_run" },
+  });
+  const code: number = await new Promise((resolve) => {
+    child.on("close", (status) => resolve(status ?? 1));
+  });
+  assert.notEqual(code, 0);
 });

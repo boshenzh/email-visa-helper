@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeEmail } from "./security.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -36,6 +37,8 @@ export interface AppConfig {
   maxTextChars: number;
   maxAttachmentBytes: number;
   maxAttachments: number;
+  profile: "dry_run" | "synthetic_test";
+  testSenderAllowlist: string[];
 }
 
 function num(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
@@ -104,8 +107,40 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     maxTextChars: num(env, "MAX_TEXT_CHARS", 20_000),
     maxAttachmentBytes: num(env, "MAX_ATTACHMENT_BYTES", 5_000_000),
     maxAttachments: num(env, "MAX_ATTACHMENTS", 5),
+    profile: requiredLiteral(env, "DEPLOYMENT_PROFILE", ["dry_run", "synthetic_test"] as const, "dry_run"),
+    testSenderAllowlist: parseAllowlist(env.TEST_SENDER_ALLOWLIST),
   };
-  return { ...config, ...overrides, publicLaunch: "blocked", deepseekThinking: "disabled" };
+  const merged = { ...config, ...overrides, publicLaunch: "blocked" as const, deepseekThinking: "disabled" as const };
+  assertDeployment(merged);
+  return merged;
+}
+
+export function parseAllowlist(raw: string | undefined): string[] {
+  if (!raw || raw.trim() === "") return [];
+  const parts = raw.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
+  const emails = parts.map((part) => normalizeEmail(part));
+  if (emails.some((email) => email.length === 0) || new Set(emails).size !== emails.length) {
+    throw new Error("TEST_SENDER_ALLOWLIST must be a comma-separated list of email addresses.");
+  }
+  return emails;
+}
+
+/** Refuses public activation and refuses live model or sending without an explicit test allowlist. */
+export function assertDeployment(config: AppConfig): void {
+  if (config.publicLaunch !== "blocked") {
+    throw new Error("PUBLIC_LAUNCH cannot be opened.");
+  }
+  if (config.profile === "dry_run") {
+    if (config.mode !== "mock" || config.autoReply !== "off" || config.deliveryMode !== "preview") {
+      throw new Error(
+        "dry_run refuses AGENT_MODE=live, AUTO_REPLY, and DELIVERY_MODE=cloudflare. Set DEPLOYMENT_PROFILE=synthetic_test and a non-empty TEST_SENDER_ALLOWLIST.",
+      );
+    }
+    return;
+  }
+  if (config.testSenderAllowlist.length === 0) {
+    throw new Error("synthetic_test requires TEST_SENDER_ALLOWLIST before intake, model calls, or sending.");
+  }
 }
 
 export const DOCUMENTED_MODELS = ["deepseek-flash", "deepseek-v4-pro"] as const;

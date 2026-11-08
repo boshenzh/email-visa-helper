@@ -6,6 +6,7 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
+      DEPLOYMENT_PROFILE: dry_run
       AGENT_MODE: mock
       AUTO_REPLY: "off"
       DELIVERY_MODE: preview

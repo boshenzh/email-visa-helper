@@ -65,19 +65,31 @@ export function cloudflareRestTransport(accountId: string, token: string, fetchI
 export async function maybeAutoSend(store: Store, draft: OutboxDraft, config: AppConfig, transport: EmailTransport | null): Promise<OutboxDraft> {
   if (config.autoReply !== "general_info" || config.deliveryMode !== "cloudflare") return draft;
   if (draft.reason !== "GENERAL_INFORMATION" || !draft.to) return draft;
+  if (config.profile !== "synthetic_test") return draft;
+  if (!config.testSenderAllowlist.includes(draft.to)) return draft;
   if (!transport) {
     store.log("send_not_configured", { outboxId: draft.id });
     return draft;
   }
-  return dispatchOutbox(store, draft, transport, config.mailbox);
+  return dispatchOutbox(store, draft, transport, config.mailbox, config.testSenderAllowlist);
 }
 
 /** Sends only the address already stored on the draft. A second call after success does not send again. */
-export async function dispatchOutbox(store: Store, draft: OutboxDraft, transport: EmailTransport, from: string): Promise<OutboxDraft> {
+export async function dispatchOutbox(
+  store: Store,
+  draft: OutboxDraft,
+  transport: EmailTransport,
+  from: string,
+  allowlist: readonly string[],
+): Promise<OutboxDraft> {
   const current = store.readOutbox(draft.id) ?? draft;
   if (current.status === "sent" && current.providerMessageId) return current;
   if (current.status === "queued") return current;
   if (!current.to) throw new MailPermanentError("missing recipient");
+  if (!allowlist.includes(current.to)) {
+    store.log("send_blocked", { outboxId: current.id, reason: "recipient_not_allowlisted" });
+    return current;
+  }
   const queued: OutboxDraft = {
     ...current,
     status: "queued",
