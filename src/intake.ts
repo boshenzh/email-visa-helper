@@ -1,3 +1,4 @@
+import type { OfficialTopic } from "./knowledge.ts";
 import type { Category, InboundEvent, PurposeBand, VaultFacts } from "./types.ts";
 import { sensitiveMarkers } from "./security.ts";
 
@@ -11,6 +12,8 @@ export interface Intake {
   deleteRequested: boolean;
   exportRequested: boolean;
   asksPersonalVerdict: boolean;
+  /** Enum only. The raw email is not forwarded with this value. */
+  publicTopic: OfficialTopic | null;
 }
 
 const EMPTY: VaultFacts = {
@@ -219,7 +222,23 @@ export function classify(text: string, facts: VaultFacts, changedNationality: bo
     deleteRequested,
     exportRequested,
     asksPersonalVerdict,
+    publicTopic: selectPublicTopic(text, category, uniqueFlags, injectionIgnored || deleteRequested || exportRequested),
   };
+}
+
+/** Local intent → a public topic id. Returns null when the message is personal, uncertain, or not a general question. */
+export function selectPublicTopic(text: string, category: Category, flags: readonly string[], blocked: boolean): OfficialTopic | null {
+  if (blocked || flags.length > 0 || category === "OUT_OF_SCOPE" || category === "REGULATED_REVIEW_REQUIRED") return null;
+  const lower = text.toLowerCase();
+  if (/\b(fee|fees|how much|what does it cost)\b/.test(lower)) return "fees";
+  if (/\beta\b/.test(lower)) return "eta";
+  if (/translat/.test(lower)) return "translations";
+  if (/\b(how long|processing time|decision time)\b/.test(lower)) return "processing";
+  if (/\b(supporting document|documents|bank statement|evidence)\b/.test(lower)) return "documents";
+  if (/\b(evisa|vignette|biometric)\b/.test(lower)) return "identity";
+  if (/\b(check-uk-visa|visa or an eta|visa, an eta)\b/.test(lower)) return "checker";
+  if (/\b(tourist|tourism|holiday|standard visitor|visitor visa|visit the uk|permitted activit)/.test(lower)) return "visitor";
+  return null;
 }
 
 export function emptyFacts(): VaultFacts {

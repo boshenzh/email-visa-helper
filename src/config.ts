@@ -17,8 +17,11 @@ export interface AppConfig {
   dataDir: string;
   knowledgePath: string;
   vaultKey: string;
-  deliveryMode: "preview";
-  autoReply: "off";
+  deepseekApiKey: string;
+  deliveryMode: "preview" | "cloudflare";
+  autoReply: "off" | "general_info";
+  cloudflareAccountId: string;
+  cloudflareEmailToken: string;
   publicLaunch: "blocked";
   killSwitch: boolean;
   caseTtlDays: number;
@@ -64,8 +67,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
       "DEEPSEEK_MODEL must be deepseek-flash or deepseek-v4-pro. Those are the Chat Completions model ids documented on 2026-11-08. Legacy aliases are not accepted here.",
     );
   }
-  const delivery = requiredLiteral(env, "DELIVERY_MODE", ["preview"] as const, "preview");
-  const autoReply = requiredLiteral(env, "AUTO_REPLY", ["off"] as const, "off");
+  const delivery = requiredLiteral(env, "DELIVERY_MODE", ["preview", "cloudflare"] as const, "preview");
+  const autoReply = requiredLiteral(env, "AUTO_REPLY", ["off", "general_info"] as const, "off");
   const launch = requiredLiteral(env, "PUBLIC_LAUNCH", ["blocked"] as const, "blocked");
   const mode = requiredLiteral(env, "AGENT_MODE", ["mock", "live"] as const, "mock");
   const config: AppConfig = {
@@ -74,6 +77,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     deepseekBaseUrl: (env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com").replace(/\/$/, ""),
     deepseekModel: model,
     deepseekThinking: "disabled",
+    deepseekApiKey: env.DEEPSEEK_API_KEY ?? "",
     ingressToken: env.INGRESS_TOKEN ?? "",
     operatorToken: env.OPERATOR_TOKEN ?? "",
     mailbox: (env.MAILBOX ?? "visa@boshen.dev").trim().toLowerCase(),
@@ -84,6 +88,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     vaultKey: env.VAULT_KEY ?? "",
     deliveryMode: delivery,
     autoReply,
+    cloudflareAccountId: env.CLOUDFLARE_ACCOUNT_ID ?? "",
+    cloudflareEmailToken: env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
     publicLaunch: launch,
     killSwitch: (env.KILL_SWITCH ?? "off").trim() === "on",
     caseTtlDays: num(env, "CASE_TTL_DAYS", 30),
@@ -99,7 +105,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     maxAttachmentBytes: num(env, "MAX_ATTACHMENT_BYTES", 5_000_000),
     maxAttachments: num(env, "MAX_ATTACHMENTS", 5),
   };
-  return { ...config, ...overrides, deliveryMode: "preview", autoReply: "off", publicLaunch: "blocked", deepseekThinking: "disabled" };
+  return { ...config, ...overrides, publicLaunch: "blocked", deepseekThinking: "disabled" };
 }
 
 export const DOCUMENTED_MODELS = ["deepseek-flash", "deepseek-v4-pro"] as const;

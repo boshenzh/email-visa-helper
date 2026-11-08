@@ -1,9 +1,10 @@
 import crypto from "node:crypto";
 import type { AppConfig } from "./config.ts";
 import { renderReviewNote, renderSourceLedger, renderUnknowns, renderWorksheet } from "./artifacts.ts";
+import { runPublicTopicLoop } from "./deepseek.ts";
 import { classify, emptyFacts, extractFacts, publicText, type Intake } from "./intake.ts";
 import { loadSnapshots } from "./knowledge.ts";
-import { LocalPolicyModel, publicViewOf, runLoop, type Model } from "./harness.ts";
+import { maybeAutoSend, type EmailTransport } from "./mail.ts";
 import { composeReply } from "./reply.ts";
 import {
   authenticateSender,
@@ -18,7 +19,10 @@ import type { AttachmentMeta, InboundEvent, InboundResult, OutboxDraft } from ".
 export interface Runtime {
   config: AppConfig;
   store: Store;
-  model?: Model;
+  /** Mocked or live Chat Completions transport. Absent means the model is not called. */
+  modelTransport?: typeof fetch;
+  /** Mocked or live Email Sending transport. Absent means a configured auto-reply stays a draft. */
+  mailTransport?: EmailTransport;
   now?: () => Date;
 }
 
@@ -183,46 +187,24 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
   store.writeCase(record);
   store.writeVault(caseId, intake.facts);
   const artifactNames: string[] = [];
-  const loop = await runLoop({
-    view: publicViewOf({
-      category: intake.category,
-      purposeBand: intake.facts.purposeBand,
-      missing: intake.missing,
-      checkerRecorded: Boolean(intake.facts.checker),
-      reviewFlags: intake.reviewFlags,
-      synthetic: false,
-    }),
-    model: runtime.model ?? new LocalPolicyModel(),
-    config,
+  if (intake.category === "CLERICAL_APPLICANT_CONTROLLED") {
+    store.writeArtifact(caseId, "worksheet.md", renderWorksheet(intake.facts, record, snapshots));
+    store.writeArtifact(caseId, "unknowns.md", renderUnknowns(intake.missing));
+    store.writeArtifact(caseId, "source-ledger.md", renderSourceLedger(snapshots));
+    artifactNames.push("worksheet.md", "unknowns.md", "source-ledger.md");
+  }
+  if (intake.category === "REGULATED_REVIEW_REQUIRED") {
+    store.writeArtifact(caseId, "review-note.md", renderReviewNote(intake.facts, intake.reviewFlags, snapshots));
+    artifactNames.push("review-note.md");
+  }
+  const model = await explainPublicTopic({
+    runtime,
     snapshots,
-    now: () => now().getTime(),
-    onTool: (name) => {
-      if (name === "build_worksheet") {
-        if (intake.category !== "CLERICAL_APPLICANT_CONTROLLED") {
-          return { tool: name, ok: false, publicSummary: "Worksheet skipped. This request is not an ordinary clerical worksheet." };
-        }
-        const body = renderWorksheet(intake.facts, record, snapshots);
-        store.writeArtifact(caseId, "worksheet.md", body);
-        store.writeArtifact(caseId, "unknowns.md", renderUnknowns(intake.missing));
-        store.writeArtifact(caseId, "source-ledger.md", renderSourceLedger(snapshots));
-        artifactNames.push("worksheet.md", "unknowns.md", "source-ledger.md");
-        return { tool: name, ok: true, publicSummary: "Local worksheet written. Values stayed on this machine." };
-      }
-      if (name === "flag_review") {
-        const body = renderReviewNote(intake.facts, intake.reviewFlags, snapshots);
-        store.writeArtifact(caseId, "review-note.md", body);
-        artifactNames.push("review-note.md");
-        return { tool: name, ok: true, publicSummary: "Review flag recorded locally." };
-      }
-      if (name === "list_gaps") {
-        return { tool: name, ok: true, publicSummary: intake.missing.join(",") || "none" };
-      }
-      if (name === "lookup_official") {
-        return { tool: name, ok: true, publicSummary: "Official snapshot read locally." };
-      }
-      return { tool: name, ok: false, publicSummary: "Ignored." };
-    },
+    topic: intake.publicTopic,
+    secrets,
+    category: intake.category,
   });
+  for (const request of model.requests) store.logModel(request);
   let downloadPath: string | null = null;
   if (intake.exportRequested) {
     store.writeArtifact(caseId, "source-ledger.md", renderSourceLedger(snapshots));
@@ -234,18 +216,29 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
   record.artifactNames = [...new Set([...(existing?.artifactNames ?? []), ...artifactNames])];
   record.category = intake.category;
   store.writeCase(record);
-  const reply = composeReply({ snapshots, intake, stopped: loop.stopped, downloadPath, deleted: false, killed: false });
-  const draft = makeDraft(parsed, caseId, threadId, sender.email, reply, "draft", intake.category);
-  store.writeOutbox(draft);
+  const reply = composeReply({
+    snapshots,
+    intake,
+    stopped: model.stopped,
+    downloadPath,
+    deleted: false,
+    killed: false,
+    modelExplanation: model.explanation,
+  });
+  const created = makeDraft(parsed, caseId, threadId, sender.email, reply, "draft", intake.category);
+  store.writeOutbox(created);
+  const draft = await maybeAutoSend(store, created, config, runtime.mailTransport ?? null);
   store.log(
     "draft_ready",
     {
       caseId,
       category: intake.category,
       flags: intake.reviewFlags,
-      tools: loop.toolNames,
-      modelRequests: 0,
-      stopped: loop.stopped,
+      tools: model.toolNames,
+      modelRequests: model.requests.length,
+      modelReason: model.reason,
+      stopped: model.stopped,
+      delivery: draft.status,
       textChars: parsed.text.length,
     },
     secrets,
@@ -259,10 +252,44 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
     reviewFlags: intake.reviewFlags,
     reply,
     artifactNames: record.artifactNames,
-    modelRequests: 0,
+    modelRequests: model.requests.length,
+    modelReason: model.reason,
+    toolNames: model.toolNames,
+    stopped: model.stopped,
+  });
+}
+
+async function explainPublicTopic(input: {
+  runtime: Runtime;
+  snapshots: ReturnType<typeof loadSnapshots>;
+  topic: Intake["publicTopic"];
+  secrets: string[];
+  category: Intake["category"];
+}): Promise<{ requests: unknown[]; explanation: string | null; toolNames: string[]; stopped: string; reason: string }> {
+  if (!input.topic) {
+    const reason = input.category === "OUT_OF_SCOPE" ? "out_of_scope" : input.category === "REGULATED_REVIEW_REQUIRED" ? "personal_or_uncertain" : "no_public_topic";
+    return { requests: [], explanation: null, toolNames: [], stopped: "not_called", reason };
+  }
+  const transport = input.runtime.modelTransport;
+  if (!transport || !input.runtime.config.deepseekApiKey) {
+    return { requests: [], explanation: null, toolNames: [], stopped: "not_called", reason: "no_transport" };
+  }
+  const loop = await runPublicTopicLoop({
+    topic: input.topic,
+    config: input.runtime.config,
+    apiKey: input.runtime.config.deepseekApiKey,
+    transport,
+    snapshots: input.snapshots,
+    secrets: input.secrets,
+    now: () => (input.runtime.now ?? (() => new Date()))().getTime(),
+  });
+  return {
+    requests: loop.requests,
+    explanation: loop.explanation,
     toolNames: loop.toolNames,
     stopped: loop.stopped,
-  });
+    reason: loop.reason,
+  };
 }
 
 export function approveOutbox(store: Store, id: string): OutboxDraft {
@@ -311,6 +338,8 @@ function makeDraft(
     status,
     reason,
     providerAttempted: false,
+    providerMessageId: null,
+    attempts: 0,
     createdAt: new Date().toISOString(),
     inReplyTo: event.messageId,
     references: [...event.references, event.messageId].slice(-20),
@@ -328,6 +357,7 @@ function emptyResult(action: InboundResult["action"], reply: string): InboundRes
     reply,
     artifactNames: [],
     modelRequests: 0,
+    modelReason: "not_run",
     toolNames: [],
     stopped: "completed",
   };
@@ -344,6 +374,7 @@ function killedIntake(): Intake {
     deleteRequested: false,
     exportRequested: false,
     asksPersonalVerdict: false,
+    publicTopic: null,
   };
 }
 
@@ -351,6 +382,3 @@ function rateIntake(): Intake {
   return killedIntake();
 }
 
-export function blockedSend(): never {
-  throw new Error("Cloudflare send and public auto-reply are not implemented. Delivery stays in the local outbox.");
-}

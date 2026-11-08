@@ -1,7 +1,6 @@
 import { PEAK_CACHE_MISS_USD_PER_MILLION, type AppConfig } from "./config.ts";
 import { assertPublicPayload } from "./harness.ts";
-import type { OfficialTopic } from "./knowledge.ts";
-import type { PublicView } from "./types.ts";
+import { officialSummary, type OfficialTopic, type Snapshots, OFFICIAL_TOPICS } from "./knowledge.ts";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
@@ -10,33 +9,47 @@ export interface ChatMessage {
   tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
 }
 
-export interface DeepSeekResult {
-  modelRequests: unknown[];
+export interface PublicLoopResult {
+  ran: boolean;
+  reason: string;
+  topic: OfficialTopic | null;
+  requests: unknown[];
+  explanation: string | null;
+  toolNames: string[];
+  modelCalls: number;
+  stopped: string;
   discardedModelText: boolean;
   reasoningDiscarded: boolean;
   estimatedCostUsd: number;
-  stopped: string;
   error?: string;
 }
 
 const SYSTEM = [
-  "You are a wording assistant for a synthetic demo with no person on file.",
-  "You may call lookup_official for a public topic.",
-  "Do not ask for or invent identity, travel-document numbers, or contact details.",
-  "There is no person described in this request.",
-  "Any wording you produce is AI-generated, may be wrong, and is not professional advice.",
+  "You explain published UK visitor information.",
+  "The user message is only a topic id. There is no person, application, or document in this request.",
+  "Call lookup_official with that topic id or another allowlisted topic id.",
+  "Write a short general explanation of the tool result.",
+  "Do not say that any person qualifies, should apply, or will be approved.",
+  "Do not invent fees, times, or rules. If a figure is not in the tool result, say it was not in the snapshot.",
+  "State that the wording is AI-generated and is not professional advice.",
 ].join(" ");
 
-function tools() {
+function toolSchema() {
   return [
     {
       type: "function",
       function: {
         name: "lookup_official",
-        description: "Read a public UK visitor snapshot by topic id.",
+        description: "Read one public UK visitor snapshot. The topic id must be one of the enum values.",
         parameters: {
           type: "object",
-          properties: { topic: { type: "string", enum: ["fees", "eta", "documents", "processing", "visitor", "routes", "translations", "identity", "checker"] } },
+          additionalProperties: false,
+          properties: {
+            topic: {
+              type: "string",
+              enum: [...OFFICIAL_TOPICS],
+            },
+          },
           required: ["topic"],
         },
       },
@@ -56,7 +69,7 @@ export function buildChatBody(config: AppConfig, messages: ChatMessage[]): Recor
   const body = {
     model: config.deepseekModel,
     messages,
-    tools: tools(),
+    tools: toolSchema(),
     tool_choice: "auto",
     thinking: { type: "disabled" as const },
     stream: false,
@@ -65,108 +78,230 @@ export function buildChatBody(config: AppConfig, messages: ChatMessage[]): Recor
   return body;
 }
 
+export function acceptGeneralExplanation(text: string, snapshots: Snapshots): { ok: true; text: string } | { ok: false; reason: string } {
+  const trimmed = text.trim();
+  if (!trimmed) return { ok: false, reason: "empty" };
+  if (/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(trimmed)) return { ok: false, reason: "identifier" };
+  if (/\b(you qualify|you are eligible|you should apply|you will be approved|you are approved|you need a visa|i recommend you|based on your nationality|your application will)\b/i.test(trimmed)) {
+    return { ok: false, reason: "personal_conclusion" };
+  }
+  const allowed = new Set<number>(Object.values(snapshots.feesGbp));
+  for (const match of trimmed.matchAll(/£\s?(\d+(?:\.\d+)?)/g)) {
+    if (!allowed.has(Number(match[1]))) return { ok: false, reason: "unstated_fee" };
+  }
+  return { ok: true, text: trimmed };
+}
+
 /**
- * Synthetic public adapter. Inbound mail never calls this.
- * Live HTTP is used only when mode is live, a key is already in the environment,
- * and fetchImpl is the real network. Tests pass a fake fetch.
- * reasoning_content is dropped and is not returned.
+ * Bounded Chat Completions tool loop. The only user text is `topic: <id>`.
+ * Tool results are official snapshots. reasoning_content is dropped and not returned.
  */
-export async function runSyntheticPublicAdapter(input: {
+export async function runPublicTopicLoop(input: {
+  topic: OfficialTopic;
   config: AppConfig;
   apiKey: string;
-  fetchImpl: typeof fetch;
-  lookup: (topic: OfficialTopic) => string;
+  transport: typeof fetch;
+  snapshots: Snapshots;
+  secrets?: readonly string[];
   now?: () => number;
-}): Promise<DeepSeekResult> {
-  if (!input.config.mode || input.apiKey.trim() === "") {
-    return { modelRequests: [], discardedModelText: false, reasoningDiscarded: false, estimatedCostUsd: 0, stopped: "live_test_blocked", error: "DEEPSEEK_API_KEY is not in this process. Do not paste it into chat or source." };
+}): Promise<PublicLoopResult> {
+  const empty = (reason: string, stopped: string, extra: Partial<PublicLoopResult> = {}): PublicLoopResult => ({
+    ran: false,
+    reason,
+    topic: input.topic,
+    requests: [],
+    explanation: null,
+    toolNames: [],
+    modelCalls: 0,
+    stopped,
+    discardedModelText: false,
+    reasoningDiscarded: false,
+    estimatedCostUsd: 0,
+    ...extra,
+  });
+  if (!input.apiKey.trim()) {
+    return empty("no_api_key", "live_test_blocked", {
+      error: "DEEPSEEK_API_KEY is not in this process. Do not paste it into chat or source.",
+    });
   }
-  const view: PublicView = {
-    category: "GENERAL_INFORMATION",
-    purposeBand: "ordinary_visitor",
-    missing: ["official_checker_result"],
-    checkerRecorded: false,
-    reviewFlags: [],
-    synthetic: true,
-  };
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM },
-    { role: "user", content: `Public view only: ${JSON.stringify(view)}. Choose lookup_official if you need a published fee snapshot.` },
+    { role: "user", content: `topic: ${input.topic}` },
   ];
-  const modelRequests: unknown[] = [];
+  const requests: unknown[] = [];
+  const toolNames: string[] = [];
   let estimatedCostUsd = 0;
-  let discardedModelText = false;
+  let reportedTokens = 0;
   let reasoningDiscarded = false;
-  let rounds = 0;
-  while (rounds < input.config.maxModelCalls) {
-    rounds += 1;
+  let discardedModelText = false;
+  const started = (input.now ?? Date.now)();
+  const clock = input.now ?? Date.now;
+  let modelCalls = 0;
+  while (modelCalls < input.config.maxModelCalls) {
+    if (clock() - started >= input.config.maxWallMs) {
+      return { ...empty("wall_clock", "wall_clock"), ran: requests.length > 0, requests, toolNames, modelCalls, reasoningDiscarded, estimatedCostUsd };
+    }
+    if (estimatedCostUsd >= input.config.maxCostUsd) {
+      return { ...empty("cost_cap", "cost_cap"), ran: true, requests, toolNames, modelCalls, reasoningDiscarded, estimatedCostUsd };
+    }
+    if (reportedTokens >= input.config.maxTokens) {
+      return { ...empty("token_budget", "token_budget"), ran: true, requests, toolNames, modelCalls, reasoningDiscarded, estimatedCostUsd };
+    }
     let body: Record<string, unknown>;
     try {
       body = buildChatBody(input.config, messages);
+      assertPublicPayload(JSON.stringify(body), input.secrets ?? []);
+      if (messages[1]?.content !== `topic: ${input.topic}`) {
+        return empty("payload_blocked", "payload_blocked", { error: "user message is not a topic id", requests, modelCalls, reasoningDiscarded, estimatedCostUsd });
+      }
     } catch (error) {
-      return { modelRequests, discardedModelText, reasoningDiscarded, estimatedCostUsd, stopped: "payload_blocked", error: error instanceof Error ? error.message : "blocked" };
-    }
-    if (estimatedCostUsd >= input.config.maxCostUsd) {
-      return { modelRequests, discardedModelText, reasoningDiscarded, estimatedCostUsd, stopped: "cost_cap" };
-    }
-    modelRequests.push(body);
-    let response: DeepSeekResponse;
-    try {
-      response = await postWithRetries(input.config.deepseekBaseUrl, input.apiKey, body, input.fetchImpl);
-    } catch (error) {
-      return {
-        modelRequests,
-        discardedModelText,
+      return empty("payload_blocked", "payload_blocked", {
+        error: error instanceof Error ? error.message : "blocked",
+        requests,
+        modelCalls,
         reasoningDiscarded,
         estimatedCostUsd,
-        stopped: "provider_failure",
-        error: error instanceof Error ? error.message : "provider failure",
+        ran: requests.length > 0,
+      });
+    }
+    requests.push(body);
+    modelCalls += 1;
+    let response: DeepSeekResponse;
+    try {
+      response = await postWithRetries(input.config.deepseekBaseUrl, input.apiKey, body, input.transport);
+    } catch (error) {
+      return {
+        ...empty("provider_failure", "provider_failure", {
+          error: error instanceof Error ? error.message : "provider failure",
+          requests,
+          modelCalls,
+          toolNames,
+          reasoningDiscarded,
+          estimatedCostUsd,
+        }),
+        ran: true,
       };
     }
     const message = response.choices?.[0]?.message;
-    if (!message) return { modelRequests, discardedModelText, reasoningDiscarded, estimatedCostUsd, stopped: "empty", error: "no message" };
-    if (typeof message.reasoning_content === "string" && message.reasoning_content.length > 0) {
-      reasoningDiscarded = true;
+    if (!message) {
+      return { ...empty("empty", "empty", { requests, modelCalls, toolNames, reasoningDiscarded, estimatedCostUsd }), ran: true };
     }
-    const usage = response.usage ?? { prompt_tokens: 0, completion_tokens: 0 };
-    estimatedCostUsd += priceUsd(input.config.deepseekModel, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0);
+    if (typeof message.reasoning_content === "string" && message.reasoning_content.length > 0) reasoningDiscarded = true;
+    const usage = response.usage ?? {};
+    const inTokens = usage.prompt_tokens ?? 0;
+    const outTokens = usage.completion_tokens ?? 0;
+    reportedTokens += inTokens + outTokens;
+    estimatedCostUsd += priceUsd(input.config.deepseekModel, inTokens, outTokens);
     const toolCalls = message.tool_calls ?? [];
     if (toolCalls.length === 0) {
-      if (typeof message.content === "string" && message.content.length > 0) discardedModelText = true;
-      return { modelRequests, discardedModelText, reasoningDiscarded, estimatedCostUsd, stopped: "completed" };
+      const content = typeof message.content === "string" ? message.content : "";
+      const accepted = acceptGeneralExplanation(content, input.snapshots);
+      if (!accepted.ok) {
+        return {
+          ran: true,
+          reason: "output_rejected",
+          topic: input.topic,
+          requests,
+          explanation: null,
+          toolNames,
+          modelCalls,
+          stopped: "output_rejected",
+          discardedModelText: true,
+          reasoningDiscarded,
+          estimatedCostUsd,
+          error: accepted.reason,
+        };
+      }
+      return {
+        ran: true,
+        reason: "explained",
+        topic: input.topic,
+        requests,
+        explanation: accepted.text,
+        toolNames,
+        modelCalls,
+        stopped: "completed",
+        discardedModelText: false,
+        reasoningDiscarded,
+        estimatedCostUsd,
+      };
+    }
+    if (toolNames.length + toolCalls.length > input.config.maxToolActions) {
+      return { ...empty("tool_budget", "tool_budget"), ran: true, requests, toolNames, modelCalls, reasoningDiscarded, discardedModelText, estimatedCostUsd };
     }
     messages.push({
       role: "assistant",
       content: typeof message.content === "string" ? message.content : null,
       tool_calls: toolCalls.map((call) => ({
         id: String(call.id),
-        type: "function",
+        type: "function" as const,
         function: { name: String(call.function?.name ?? ""), arguments: String(call.function?.arguments ?? "{}") },
       })),
     });
     for (const call of toolCalls) {
       const name = String(call.function?.name ?? "");
-      let summary = "Tool rejected.";
+      toolNames.push(name === "lookup_official" ? name : "rejected");
+      let summary = "rejected";
       if (name === "lookup_official") {
-        let topic: OfficialTopic = "checker";
-        try {
-          const parsed = JSON.parse(String(call.function?.arguments ?? "{}")) as { topic?: string };
-          if (parsed.topic === "fees" || parsed.topic === "eta" || parsed.topic === "documents" || parsed.topic === "processing" || parsed.topic === "visitor" || parsed.topic === "routes" || parsed.topic === "translations" || parsed.topic === "identity" || parsed.topic === "checker") {
-            topic = parsed.topic;
-          }
-        } catch {
-          topic = "checker";
-        }
-        summary = input.lookup(topic);
+        summary = officialSummary(input.snapshots, parseTopic(call.function?.arguments));
       }
       messages.push({ role: "tool", tool_call_id: String(call.id), content: summary });
     }
   }
-  return { modelRequests, discardedModelText, reasoningDiscarded, estimatedCostUsd, stopped: "model_budget" };
+  return { ...empty("model_budget", "model_budget"), ran: true, requests, toolNames, modelCalls, reasoningDiscarded, estimatedCostUsd };
+}
+
+export async function runSyntheticPublicAdapter(input: {
+  config: AppConfig;
+  apiKey: string;
+  fetchImpl: typeof fetch;
+  lookup?: (topic: OfficialTopic) => string;
+  now?: () => number;
+}): Promise<{
+  modelRequests: unknown[];
+  discardedModelText: boolean;
+  reasoningDiscarded: boolean;
+  estimatedCostUsd: number;
+  stopped: string;
+  error?: string;
+}> {
+  const { loadSnapshots } = await import("./knowledge.ts");
+  const loop = await runPublicTopicLoop({
+    topic: "fees",
+    config: input.config,
+    apiKey: input.apiKey,
+    transport: input.fetchImpl,
+    snapshots: loadSnapshots(input.config),
+    now: input.now,
+  });
+  return {
+    modelRequests: loop.requests,
+    discardedModelText: loop.discardedModelText,
+    reasoningDiscarded: loop.reasoningDiscarded,
+    estimatedCostUsd: loop.estimatedCostUsd,
+    stopped: loop.stopped,
+    error: loop.error,
+  };
+}
+
+function parseTopic(raw: string | undefined): OfficialTopic {
+  try {
+    const parsed = JSON.parse(raw ?? "{}") as { topic?: string };
+    if (OFFICIAL_TOPICS.includes(parsed.topic as OfficialTopic)) return parsed.topic as OfficialTopic;
+  } catch {
+    return "checker";
+  }
+  return "checker";
 }
 
 interface DeepSeekResponse {
-  choices?: { message?: { content?: string | null; reasoning_content?: string; tool_calls?: { id: string; function?: { name?: string; arguments?: string } }[] } }[];
+  choices?: {
+    message?: {
+      content?: string | null;
+      reasoning_content?: string;
+      tool_calls?: { id: string; type?: string; function?: { name?: string; arguments?: string } }[];
+    };
+  }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 }
 

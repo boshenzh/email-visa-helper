@@ -27,19 +27,31 @@ A verified inbound event is `POST /v1/email/inbound` with `Authorization: Bearer
 
 Operator routes use a different token (`OPERATOR_TOKEN`): approve an outbox item, delete a case by id, or run the demo TTL sweep. The ingress token cannot do those.
 
-## 2. Live model check, later
+## 2. Live model, later
 
-The key is expected to be present on the operator’s host, not in this repo and not in chat. This coding environment does not have it, so no live call was made.
+The key stays in the server environment. It is not in this VM, so the tests here mock `fetch` and do not claim a live completion.
 
-When you choose to test the adapter yourself:
+When you choose to call the account that already answered as `deepseek-flash`:
 
-1. Export `DEEPSEEK_API_KEY` in the server environment only.
-2. Keep `DEEPSEEK_MODEL=deepseek-flash` unless you have confirmed `deepseek-v4-pro` on that account.
-3. Keep `DEEPSEEK_THINKING=disabled`.
-4. Call `runSyntheticPublicAdapter` from a one-off script that uses a public topic and no applicant text. Inbound mail still will not call it.
-5. Stop if the payload checker throws. Do not “fix” that by putting a nationality or a raw email into the prompt.
+1. Export `DEEPSEEK_API_KEY` only in that server environment. Keep `DEEPSEEK_MODEL=deepseek-flash` unless you have confirmed the other documented id on the account.
+2. Set `AGENT_MODE=live` and keep `DEEPSEEK_THINKING=disabled`.
+3. The process then uses the real Chat Completions endpoint for mail that reduces to one public topic. Personal and uncertain mail still does not call it.
+4. Watch `data/logs/model-requests.jsonl`. Each line should be a topic id and an official snippet. If a line contains an applicant sentence, stop and treat that as a bug.
 
-There is no verified API promise of zero retention, no training, or a particular region. Do not send real mail or real identity data to find out.
+There is no verified API promise of zero retention, no training, or a particular region.
+
+## 2a. Narrow auto-reply, later
+
+Leave `AUTO_REPLY=off` and `DELIVERY_MODE=preview` until you intend to send.
+
+To enable only general-information replies:
+
+1. Onboard the sending domain in Cloudflare Email Sending and create an API token that can send. Arbitrary recipients need Workers Paid. `visa@boshen.dev` must be an allowed sender.
+2. Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_API_TOKEN` in the server environment, not in git.
+3. Set `DELIVERY_MODE=cloudflare` and `AUTO_REPLY=general_info`.
+4. Clerical worksheets, review cases, and out-of-scope mail stay in the outbox. Only `GENERAL_INFORMATION` is handed to the REST call, and only to the authenticated sender.
+
+Do not do this as part of copying the repo. This run did not.
 
 ## 3. Docker on the existing server
 

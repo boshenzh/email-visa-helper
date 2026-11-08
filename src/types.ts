@@ -103,9 +103,11 @@ export interface OutboxDraft {
   to: string | null;
   subject: string;
   text: string;
-  status: "draft" | "approved_not_sent" | "suppressed" | "held_unverified";
+  status: "draft" | "approved_not_sent" | "queued" | "sent" | "failed" | "suppressed" | "held_unverified";
   reason: string;
-  providerAttempted: false;
+  providerAttempted: boolean;
+  providerMessageId: string | null;
+  attempts: number;
   createdAt: string;
   inReplyTo: string;
   references: string[];
@@ -121,6 +123,7 @@ export interface InboundResult {
   reply: string;
   artifactNames: string[];
   modelRequests: number;
+  modelReason: string;
   toolNames: string[];
   stopped: string;
 }

@@ -12,6 +12,8 @@ Public launch is blocked. Personalised immigration advice is blocked. This file 
 
 Until those are decided, the program may publish general procedural information, signpost the official checker and the adviser finder, and copy an applicant’s own words into a worksheet that says it is not an application and not a finding that the rules are met.
 
+`AUTO_REPLY=general_info` is a separate switch, default off. It can send only that general information to the person who passed DMARC. Turning it on is not legal clearance, not a public launch, and not permission to send a worksheet or a personal view. The model text is dropped when it states a personal conclusion. Keyword selection is not a claim that redaction made an arbitrary email safe to upload.
+
 ## Categories
 
 | Category | Code behaviour |

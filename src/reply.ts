@@ -41,6 +41,7 @@ export function composeReply(input: {
   downloadPath: string | null;
   deleted: boolean;
   killed: boolean;
+  modelExplanation?: string | null;
 }): string {
   if (input.killed) {
     return `${GREETING}\n\nThis inbox is paused. Nothing has been submitted, and this draft is not sent automatically.`;
@@ -63,6 +64,9 @@ export function composeReply(input: {
   }
   parts.push(boundary(input.intake.category, input.intake.facts), "");
   parts.push("I will not decide visa, ETA, or neither. The official checker is https://www.gov.uk/check-uk-visa.", "");
+  if (input.modelExplanation) {
+    parts.push("AI-generated general explanation of the published pages. It is not about you personally:", input.modelExplanation, "");
+  }
   if (input.intake.category !== "REGULATED_REVIEW_REQUIRED" || input.intake.facts.purposeBand === "ordinary_visitor" || input.intake.facts.purposeBand === "unknown" || input.intake.facts.purposeBand === "none") {
     parts.push(feeBlock(input.snapshots), "");
   }

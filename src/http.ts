@@ -21,7 +21,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, runti
       autoReply: runtime.config.autoReply,
       delivery: runtime.config.deliveryMode,
       publicLaunch: runtime.config.publicLaunch,
-      modelCallsOnInbound: false,
+      modelCallsOnInbound: Boolean(runtime.modelTransport),
+      emailSending: Boolean(runtime.mailTransport),
     });
     return;
   }

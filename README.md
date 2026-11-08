@@ -8,15 +8,16 @@ This repository is a demo. It is **not** cleared for public launch and it is **n
 
 | Piece | State |
 | --- | --- |
-| Local intake, official-source signposting, clerical worksheet, outbox draft | **Implemented** |
-| Deterministic tests and the sample in `examples/sample-standard-visitor/` | **Implemented** (mock, no API key) |
-| DeepSeek Chat Completions adapter (`deepseek-flash`, thinking disabled) | **Implemented, not used for inbound mail.** Live account check is **blocked** here: the key is not in this environment |
-| Cloudflare Email Routing `email()` adapter | **Scaffold only.** Not deployed |
-| Auto-reply, DNS, real sending, application payment or submission | **Blocked.** Not activated |
-| Personalised eligibility, evidence strategy, or representations | **Blocked** until legal review |
-| “Production safe” | **Not claimed** |
+| Local intake, official snapshots, clerical worksheet, draft outbox | **Implemented** |
+| DeepSeek function-call loop for a public topic id | **Implemented.** Tests use a mocked Chat Completions transport. No live call from this VM |
+| Raw applicant mail sent to the model | **Does not run.** Personal, uncertain, and injected mail stay on the local draft |
+| Cloudflare Email Sending REST adapter | **Implemented, default off.** Mock-transport tests only. No live send |
+| Email Routing `email()` worker | **Scaffold only.** Not deployed |
+| DNS changes, application payment, submission | **Not done** |
+| Personalised eligibility or representations | **Blocked** until legal review |
+| “Production safe” or “regex makes any PII safe” | **Not claimed** |
 
-Inbound mail is handled by a local reason/act/observe loop. Applicant facts stay on disk. They are not put in a model request. `AGENT_MODE=live` does not change that.
+What runs when a transport and API key are present: a general question is reduced locally to a topic id such as `fees`. The model sees `topic: fees`, calls `lookup_official`, and may write a general explanation. Local code then adds questions and any worksheet. What does not run: the raw email, names, addresses, and case facts are not part of that request. If a single public topic cannot be chosen, the model is not called.
 
 ## What a reply is
 

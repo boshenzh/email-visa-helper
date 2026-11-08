@@ -13,9 +13,21 @@ It is not used here, for these reasons:
 - OpenAI’s Agents API architecture (harness, environment, application server) is that product’s session API. DeepSeek’s Chat Completions API is stateless: `previous_response_id`, `store`, and hosted sessions are not part of the adapter we use. The portable piece we kept is reason, act, observe, with the application owning state, tools, budgets, and the outbox.
 - Mock mode has to pass the whole demo with no API key.
 
-The DeepSeek adapter is a separate function, `runSyntheticPublicAdapter`. It speaks Chat Completions only, at `https://api.deepseek.com/chat/completions`, model id from `DEEPSEEK_MODEL`, default `deepseek-flash`. The documented enum on 2026-11-08 is `deepseek-flash` and `deepseek-v4-pro`. Thinking is sent as `{ "type": "disabled" }` because thinking is otherwise on, and thinking-plus-tools would require storing `reasoning_content`. Strict mode (`/beta`) is not used. Any `reasoning_content` that still arrives is discarded and not logged. Inbound mail never calls this function, including when `AGENT_MODE=live`.
+`runPublicTopicLoop` is the agent. It calls `POST https://api.deepseek.com/chat/completions` with `tools`, `tool_choice: "auto"`, and `thinking: { "type": "disabled" }`. The model id comes from `DEEPSEEK_MODEL` and defaults to `deepseek-flash`. The documented enum on 2026-11-08 is `deepseek-flash` and `deepseek-v4-pro`. Thinking is disabled because it is otherwise on, and thinking-plus-tools would require storing `reasoning_content`. That field is dropped if a response still contains it. Strict mode (`/beta`) is not used.
 
-Account availability was not checked. The key is not in this environment. A Chinese news post from September 2026 said `deepseek-v4-pro` traffic would be routed to V4.1 Flash until a later Pro model; the English pricing page still lists both ids. Do not assume either id works on the account until a live call that you run yourself.
+The only user message is `topic: <id>`. The only tool is `lookup_official`. Its result is the official snapshot for that id. The next request appends the assistant `tool_calls` and a `role: "tool"` message with the same `tool_call_id`. A tool name outside the allowlist gets `rejected` and is not executed. The loop stops on a step, tool, token, cost, or time budget.
+
+The final text is kept only if it does not state a personal conclusion and any `£` amount is one of the snapshot fees. Local code then adds the disclosure, the snapshot block, questions, and a worksheet. A failed check drops the model text and the local snapshot remains.
+
+The loop runs for an inbound message only when all of these are true:
+
+- the local classifier picked one public topic
+- the message is not out of scope, not a review case, and not an injected or account-action message
+- `modelTransport` is set and `DEEPSEEK_API_KEY` is non-empty
+
+`AGENT_MODE=live` wires `fetch` as that transport when the key is already in the environment. This VM does not have the key, so `npm test` and `npm run sample` use a mocked transport. Those tests assert the HTTP body. They are not a live provider call. A coordinator check reported that `deepseek-flash` answers on the operator’s account. A September 2026 DeepSeek post said `deepseek-v4-pro` traffic would be routed to V4.1 Flash for a period; the English pricing page still lists both ids.
+
+Matching a keyword and deleting it from a string is not treated as a way to make arbitrary mail safe. The request is built from the topic id and the snapshot file. If that cannot be done, the model is not called.
 
 ## Flow
 
@@ -40,7 +52,9 @@ Cloudflare Email Routing invokes `email(message, env, ctx)`. It can `forward`, `
 
 `message.reply()` is the constrained way to answer the same sender later: DMARC must pass, the recipient must be the inbound sender, one reply per event, and more than 100 `References` entries are rejected by Cloudflare. Arbitrary-recipient sending is a different product (Email Sending, Workers Paid, an onboarded domain) via the binding, the REST API, or authenticated SMTP on `smtp.mx.cloudflare.net:465`. Routing does not give you a general SMTP inbox. None of those send paths are implemented.
 
-The Node outbox stores a draft. Approval sets `approved_not_sent` and does not call a provider. `blockedSend()` throws if something tries to treat a provider as live.
+The Node outbox stores a draft. Operator approval sets `approved_not_sent` and does not send.
+
+`src/mail.ts` is the Email Sending REST client: `POST https://api.cloudflare.com/client/v4/accounts/{account_id}/email/sending/send` with `to`, `from`, `subject`, and `text`. It is not the inbound `email()` handler and it is not generic SMTP. It runs only when `AUTO_REPLY=general_info` and `DELIVERY_MODE=cloudflare`. The recipient is the address stored when the draft was created, which is the DMARC-authenticated sender. A `sent` row is not sent again. A `queued` row is not sent again. HTTP 429 and 5xx are retried up to three attempts; other HTTP errors fail the row. The default is `AUTO_REPLY=off` and `DELIVERY_MODE=preview`, so this process does not call that API. Tests inject a mock transport. No message was sent from this VM.
 
 Identity for a case is the header From only when the first `Authentication-Results` value is from `mx.cloudflare.net` and `dmarc=pass` is aligned to that domain. Reply-To is ignored. HTML is not used as the body. Our own address, auto-submitted mail, bulk precedence, mailer-daemon, and our `X-Visa-Agent` header do not get a reply.
 
