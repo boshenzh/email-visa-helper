@@ -1,0 +1,24 @@
+{
+  // Placeholder adapter. Do not deploy this file as-is.
+  // No account_id, zone id, or route id is set here on purpose.
+  // Install wrangler locally and run `wrangler types` before a real deploy.
+  // INGRESS_TOKEN is a secret: `wrangler secret put INGRESS_TOKEN`.
+  // Do not add a send_email binding until auto-reply is reviewed.
+  "name": "visa-email-adapter",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-08",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true
+    }
+  },
+  "vars": {
+    "MAILBOX": "visa@boshen.dev",
+    "RUNTIME_URL": "http://127.0.0.1:8080/v1/email/inbound",
+    "AUTO_REPLY": "off",
+    "OPERATOR_FORWARD_ADDRESS": ""
+  }
+}
