@@ -39,7 +39,7 @@ INGRESS_TOKEN=replace-with-a-long-random-string
 OPERATOR_TOKEN=replace-with-a-different-long-random-string
 ```
 
-`dry_run` refuses `AGENT_MODE=live`, `AUTO_REPLY=general_info`, and `DELIVERY_MODE=cloudflare` or `resend`. `DELIVERY_MODE=resend` also exits at startup when `RESEND_API_KEY` or `RESEND_FROM` is missing. The process exits instead of silently going live.
+`dry_run` refuses `AGENT_MODE=live`, any `AUTO_REPLY` other than `off`, and `DELIVERY_MODE=cloudflare` or `resend`. `DELIVERY_MODE=resend` also exits at startup when `RESEND_API_KEY` or `RESEND_FROM` is missing. The process exits instead of silently going live.
 
 ## Start
 
@@ -120,16 +120,19 @@ docker inspect visa-test-ingress --format '{{.Name}}'
 
 `deploy/docker-compose.vps.yml` joins the existing external network. It does not create a replacement network and it does not contain credentials. It reads `/opt/email-visa-helper/shared/runtime.env` and stores cases in `/opt/email-visa-helper/shared/data`. Recreating the container must leave it on `visa-test-ingress`. Do not run `docker network rm visa-test-ingress` and do not prune volumes. Public launch stays blocked. Sending stays off unless that env file also sets the general-info switches, which the current test file does not.
 
-Automatic sending stays off until you also set `AUTO_REPLY=general_info` and a delivery mode. Cloudflare Email Sending (`DELIVERY_MODE=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_EMAIL_API_TOKEN`) is not available on the Workers Free plan. On this account use Resend instead. Even then, only a general-information draft goes out automatically, and only to the allowlisted authenticated sender. Worksheets and review cases stay in the outbox. `Reply-To` and addresses in the body are never the recipient. `PUBLIC_LAUNCH` stays `blocked`. A `sent` or `queued` row is not sent again. HTTP 429 and 5xx are retried up to three times.
+Automatic sending stays off until you set `AUTO_REPLY` and a delivery mode. `general_info` sends only a general-information reply. `all` sends every customer reply the runtime writes for an allowlisted DMARC-authenticated sender: intake, a worksheet, an escalation, a refusal, and out-of-scope mail. Cloudflare Email Sending (`DELIVERY_MODE=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_EMAIL_API_TOKEN`) is not available on the Workers Free plan. On this account use Resend. `Reply-To` and addresses in the body are never the recipient. `PUBLIC_LAUNCH` stays `blocked`. A `sent` or `queued` row is not sent again. HTTP 429 and 5xx are retried up to three times.
+
+Two rows stay unsent even when `AUTO_REPLY=all`. `held_unverified` has no DMARC pass, so there is no allowlisted recipient. `suppressed` covers mail-loop stops and the kill switch; a reply there would loop or ignore the pause, and the kill-switch row has no authenticated recipient.
 
 ## One Resend proof, by hand
 
-Leave `AUTO_REPLY=off`. In `/opt/email-visa-helper/shared/runtime.env`, change only these lines:
+In `/opt/email-visa-helper/shared/runtime.env`, set Resend and turn automatic sending on for every customer reply:
 
 ```bash
 DELIVERY_MODE=resend
 RESEND_API_KEY=set-on-this-host-only
 RESEND_FROM=Visa Helper (AI) <visa@boshen.dev>
+AUTO_REPLY=all
 ```
 
 Keep the rest of the current test file:
@@ -137,7 +140,6 @@ Keep the rest of the current test file:
 ```bash
 DEPLOYMENT_PROFILE=synthetic_test
 AGENT_MODE=live
-AUTO_REPLY=off
 PUBLIC_LAUNCH=blocked
 MAILBOX=visa@boshen.dev
 TEST_SENDER_ALLOWLIST=the-mailbox-that-may-receive-the-proof
@@ -153,7 +155,7 @@ Check:
 curl -s http://127.0.0.1:8080/health
 ```
 
-Expect `"delivery":"resend"`, `"autoReply":"off"`, `"emailSending":false`, `"publicLaunch":"blocked"`, and `"resend":{"state":"manual","from":"Visa Helper (AI) <visa@boshen.dev>","replyTo":"visa@boshen.dev"}`. `state` is `auto` only after `AUTO_REPLY=general_info`. `state` is `off` when Resend is not selected.
+Expect `"delivery":"resend"`, `"autoReply":"all"`, `"emailSending":true`, `"publicLaunch":"blocked"`, and `"resend":{"state":"auto","from":"Visa Helper (AI) <visa@boshen.dev>","replyTo":"visa@boshen.dev"}`. `autoReply` is the mode: `off`, `general_info`, or `all`. `resend.state` is `manual` while `AUTO_REPLY=off`, and `off` when Resend is not selected.
 
 Send one existing draft. `OUTBOX_ID` is the 32-character id already in the outbox. The body must be empty. A public client address is refused. The ingress token is refused.
 

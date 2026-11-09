@@ -139,35 +139,48 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
   const text = publicText(parsed);
   const secrets = [parsed.replyTo, parsed.headerFrom, parsed.envelopeFrom, sender.email].filter(Boolean);
   if (!store.consumeRate("global", config.globalHourlyLimit, now().getTime()) || !store.consumeRate(sender.ok ? `sender:${sender.email}` : `unverified:${sha256(parsed.envelopeFrom || parsed.messageId)}`, config.senderHourlyLimit, now().getTime())) {
-    const reply = `${composeReply({ snapshots, intake: rateIntake(), stopped: "completed", downloadPath: null, deleted: false, killed: false })}\nA local rate limit paused this message. Nothing was submitted.\n`;
-    const draft = makeDraft(parsed, sender.ok ? caseId : null, threadId, sender.ok ? sender.email : null, reply, sender.ok ? "draft" : "held_unverified", "rate_limit");
-    store.writeOutbox(draft);
+    const reply = composeReply({
+      snapshots,
+      intake: rateIntake(),
+      stopped: "completed",
+      downloadPath: null,
+      deleted: false,
+      killed: false,
+      note: "A local rate limit paused this message. Nothing was submitted.",
+    });
+    const created = makeDraft(parsed, sender.ok ? caseId : null, threadId, sender.ok ? sender.email : null, reply, sender.ok ? "draft" : "held_unverified", "rate_limit");
+    store.writeOutbox(created);
+    const draft = await maybeAutoSend(store, created, config, runtime.mailTransport ?? null);
     store.log("rate_limited", { caseId: sender.ok ? caseId : null }, secrets);
     return finish(store, parsed.messageId, { ...emptyResult("draft", reply), caseId: sender.ok ? caseId : null, outboxId: draft.id, category: "GENERAL_INFORMATION", reply, stopped: "rate_limit" });
   }
   if (!sender.ok) {
-    const reply = "Hello — I’m the AI preparation assistant for visa@boshen.dev. I couldn’t verify that this message’s From address passed DMARC at Cloudflare, so I did not open or update a case. Reply-To is not used. Nothing was submitted, and this draft is not sent automatically.\n";
-    const draft = makeDraft(parsed, null, threadId, null, reply, "held_unverified", sender.reason);
-    store.writeOutbox(draft);
+    const reply = "Hello,\n\nI’m the AI preparation assistant for visa@boshen.dev. I couldn’t verify that this message’s From address passed DMARC, so I didn’t open a case. Reply-To is not used.\n\nVisa Helper\n";
+    const created = makeDraft(parsed, null, threadId, null, reply, "held_unverified", sender.reason);
+    store.writeOutbox(created);
+    const draft = await maybeAutoSend(store, created, config, runtime.mailTransport ?? null);
     store.log("unverified_sender", { reason: sender.reason, messageId: sha256(parsed.messageId) }, secrets);
     return finish(store, parsed.messageId, { ...emptyResult("draft", reply), outboxId: draft.id, reply, stopped: "unverified" });
   }
   const previous = existing ? store.readVault(caseId) : null;
   const extracted = extractFacts(text, previous);
   const intake = classify(text, extracted.facts, extracted.changedNationality, Boolean(existing));
+  const preserveCase = Boolean(existing) && (intake.category === "OUT_OF_SCOPE" || intake.bareGreeting);
   secrets.push(extracted.facts.nationality, extracted.facts.residence);
   if (intake.deleteRequested) {
     if (existing && existing.sender === sender.email) {
       store.removeCase(caseId);
       const reply = composeReply({ snapshots, intake, stopped: "completed", downloadPath: null, deleted: true, killed: false });
-      const draft = makeDraft(parsed, null, threadId, sender.email, reply, "draft", "deleted");
-      store.writeOutbox(draft);
+      const created = makeDraft(parsed, null, threadId, sender.email, reply, "draft", "deleted");
+      store.writeOutbox(created);
+      const draft = await maybeAutoSend(store, created, config, runtime.mailTransport ?? null);
       store.log("deleted", { caseId }, secrets);
       return finish(store, parsed.messageId, { ...emptyResult("deleted", reply), outboxId: draft.id, reply, stopped: "deleted" });
     }
-    const reply = "I can delete only the case already bound to this verified sender. I will not delete a case because an email address was typed in the message.\n";
-    const draft = makeDraft(parsed, existing ? caseId : null, threadId, sender.email, reply, "draft", "delete_refused");
-    store.writeOutbox(draft);
+    const reply = "Hello,\n\nI can delete only the case already bound to this verified sender. I will not delete a case because an email address was typed in the message.\n\nVisa Helper\n";
+    const created = makeDraft(parsed, existing ? caseId : null, threadId, sender.email, reply, "draft", "delete_refused");
+    store.writeOutbox(created);
+    const draft = await maybeAutoSend(store, created, config, runtime.mailTransport ?? null);
     return finish(store, parsed.messageId, { ...emptyResult("rejected", reply), caseId: existing?.id ?? null, outboxId: draft.id, reply, stopped: "delete_refused" });
   }
   const threadReplies = store.listOutbox().filter((item) => item.threadId === threadId && item.status !== "suppressed").length;
@@ -181,10 +194,10 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
     verified: true,
     createdAt: existing?.createdAt ?? now().toISOString(),
     updatedAt: now().toISOString(),
-    category: intake.category === "OUT_OF_SCOPE" && existing ? existing.category : intake.category,
-    purposeBand: intake.category === "OUT_OF_SCOPE" && existing ? existing.purposeBand : intake.facts.purposeBand,
-    reviewFlags: intake.category === "OUT_OF_SCOPE" && existing ? existing.reviewFlags : intake.reviewFlags,
-    missing: intake.category === "OUT_OF_SCOPE" && existing ? existing.missing : intake.missing,
+    category: existing && preserveCase ? existing.category : intake.category,
+    purposeBand: existing && preserveCase ? existing.purposeBand : intake.facts.purposeBand,
+    reviewFlags: existing && preserveCase ? existing.reviewFlags : intake.reviewFlags,
+    missing: existing && preserveCase ? existing.missing : intake.missing,
     synthetic: false,
     threadIds: [...new Set([...(existing?.threadIds ?? []), threadId])],
     messageIds: [...new Set([...(existing?.messageIds ?? []), parsed.messageId])],
@@ -193,13 +206,14 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
     vaultMode: config.vaultKey.length >= 16 ? "aes-256-gcm" as const : "plaintext-demo" as const,
   };
   store.writeCase(record);
-  if (!(intake.category === "OUT_OF_SCOPE" && existing)) store.writeVault(caseId, intake.facts);
+  if (!(existing && (intake.category === "OUT_OF_SCOPE" || intake.bareGreeting))) store.writeVault(caseId, intake.facts);
   const artifactNames: string[] = [];
   const refreshWorksheet =
-    intake.category === "CLERICAL_APPLICANT_CONTROLLED" ||
-    (intake.category !== "OUT_OF_SCOPE" &&
-      (existing?.artifactNames ?? []).includes("worksheet.md") &&
-      (intake.facts.purposeBand === "ordinary_visitor" || intake.reviewFlags.includes("minor")));
+    !intake.bareGreeting &&
+    (intake.category === "CLERICAL_APPLICANT_CONTROLLED" ||
+      (intake.category !== "OUT_OF_SCOPE" &&
+        (existing?.artifactNames ?? []).includes("worksheet.md") &&
+        (intake.facts.purposeBand === "ordinary_visitor" || intake.reviewFlags.includes("minor"))));
   if (refreshWorksheet) {
     store.writeArtifact(caseId, "worksheet.md", renderWorksheet(intake.facts, record, snapshots));
     store.writeArtifact(caseId, "unknowns.md", renderUnknowns(intake.missing));
@@ -388,6 +402,7 @@ function killedIntake(): Intake {
     asksPersonalVerdict: false,
     publicTopic: null,
     mentionsFunds: false,
+    bareGreeting: false,
   };
 }
 

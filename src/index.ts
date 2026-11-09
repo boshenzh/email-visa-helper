@@ -28,7 +28,7 @@ server.listen(config.port, config.host, () => {
       delivery: config.deliveryMode,
       allowlistCount: config.testSenderAllowlist.length,
       publicTopicModel: modelTransport ? "configured" : "not_configured",
-      emailSending: config.autoReply === "general_info" && mailTransport ? "configured" : "off",
+      emailSending: config.autoReply !== "off" && mailTransport ? "configured" : "off",
       resend: resendDeliveryState(config, Boolean(mailTransport)),
     }),
   );

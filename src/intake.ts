@@ -15,6 +15,8 @@ export interface Intake {
   /** Enum only. The raw email is not forwarded with this value. */
   publicTopic: OfficialTopic | null;
   mentionsFunds: boolean;
+  /** A hello with no question. The reply stays short and does not list intake gaps. */
+  bareGreeting: boolean;
 }
 
 const EMPTY: VaultFacts = {
@@ -179,7 +181,35 @@ function missingFields(facts: VaultFacts): string[] {
   return missing;
 }
 
+/** Hello, thanks, or an empty note, with no visa question in the words. */
+export function isBareGreeting(text: string): boolean {
+  const normalized = text
+    .replace(/[\u2018\u2019]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return true;
+  return /^(?:hi|hello|hey|hiya|good morning|good afternoon|good evening|thanks|thank you)(?: there)?(?: how are you| i have a question| quick question)?$/.test(normalized);
+}
+
 export function classify(text: string, facts: VaultFacts, changedNationality: boolean, continuing: boolean): Intake {
+  if (isBareGreeting(text)) {
+    return {
+      facts,
+      category: "GENERAL_INFORMATION",
+      reviewFlags: [],
+      missing: missingFields(facts),
+      inScope: true,
+      injectionIgnored: false,
+      deleteRequested: false,
+      exportRequested: false,
+      asksPersonalVerdict: false,
+      publicTopic: null,
+      mentionsFunds: false,
+      bareGreeting: true,
+    };
+  }
   const lower = text.toLowerCase();
   const injectionIgnored = /ignore (?:all |any )?(?:previous|prior) instructions|system prompt|you are now|developer message|tool call|send (?:the )?(?:file|vault|secrets) to/i.test(text);
   const deleteRequested = /delete my (?:case|data|information)|erase my data|forget me/i.test(text);
@@ -233,6 +263,7 @@ export function classify(text: string, facts: VaultFacts, changedNationality: bo
     asksPersonalVerdict,
     publicTopic: selectPublicTopic(text, category, uniqueFlags, injectionIgnored || deleteRequested || exportRequested),
     mentionsFunds,
+    bareGreeting: false,
   };
 }
 

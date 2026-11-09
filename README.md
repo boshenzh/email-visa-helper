@@ -59,6 +59,6 @@ Setup that touches DNS or mail is in [docs/SETUP.md](docs/SETUP.md). Do that onl
 
 - No nationality list is used to decide a route. The applicant uses [Check if you need a UK visa](https://www.gov.uk/check-uk-visa).
 - Reply-To and HTML are not trusted. The draft recipient is the DMARC-aligned header From, and even then the draft is not sent.
-- Auto-reply is `off`. Approving an outbox item marks it `approved_not_sent`. A separate operator command can send one stored allowlisted draft; it is closed in `dry_run`.
+- Auto-reply defaults to `off`. `general_info` and `all` are refused on `dry_run`. Approving an outbox item marks it `approved_not_sent`. A separate operator command can send one stored allowlisted draft.
 - Form filling is not treated as a blanket exemption. There is no claimed AI or overseas exemption.
 - DeepSeek’s consumer privacy policy (10 February 2026) says the services are not meant for sensitive data, and it names citizenship and immigration status. API-specific retention and training terms were not verified as a zero-retention promise. See [docs/SOURCE-REGISTER.md](docs/SOURCE-REGISTER.md).

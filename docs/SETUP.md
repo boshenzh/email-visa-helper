@@ -49,7 +49,7 @@ Cloudflare Email Sending is not available on the Workers Free plan. The outbound
 1. Set `DELIVERY_MODE=resend`, `RESEND_API_KEY`, and `RESEND_FROM` (for example `Visa Helper (AI) <visa@boshen.dev>`) in the server environment, not in git. The process exits if the mode is `resend` and either value is missing.
 2. `reply_to` is `MAILBOX` (`visa@boshen.dev`). The recipient stays the allowlisted authenticated sender.
 3. Keep `AUTO_REPLY=off` to prove one draft by hand: `POST /v1/outbox/<id>/send` with `OPERATOR_TOKEN`, or `node --experimental-strip-types src/send-outbox.ts <id>`. Neither call takes a recipient.
-4. Set `AUTO_REPLY=general_info` only when general-information replies should go out on their own. Clerical worksheets, review cases, and out-of-scope mail stay in the outbox.
+4. Set `AUTO_REPLY=general_info` to send only general-information replies, or `AUTO_REPLY=all` to send every customer reply to the allowlisted authenticated sender. Unverified and suppressed rows stay unsent.
 
 `DELIVERY_MODE=cloudflare` with `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_API_TOKEN` remains in the code for an account that can use Email Sending. This account cannot. Do not do either send path as part of copying the repo. This run did not.
 

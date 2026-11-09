@@ -226,8 +226,29 @@ test("a vague preparation request asks for the missing facts instead of the omni
   assert.match(result.reply, /nationality/i);
   assert.match(result.reply, /arrival and departure dates/i);
   assert.match(result.reply, /AI preparation assistant/);
+  assert.equal((result.reply.match(/ordinary passport/gi) ?? []).length, 1);
+  assert.doesNotMatch(result.reply, /not sent automatically/);
   assert.doesNotMatch(result.reply, /£506/);
   assert.ok(result.reply.length < 2200, `prepare reply too long: ${result.reply.length}`);
+});
+
+test("a bare greeting is a short intro without the intake checklist", async () => {
+  const runtime = tempRuntime();
+  const result = await send(runtime, { messageId: "just-hi", subject: "hi", text: "hi" });
+  assert.equal(result.category, "GENERAL_INFORMATION");
+  assert.equal(result.modelRequests, 0);
+  assert.match(result.reply, /AI preparation assistant/);
+  assert.match(result.reply, /not a regulated immigration adviser/);
+  assert.match(result.reply, /published fees/);
+  assert.match(result.reply, /documents the official pages mention/);
+  assert.match(result.reply, /how long you can stay/);
+  assert.match(result.reply, /passport scans/);
+  assert.match(result.reply, /check-uk-visa/);
+  assert.match(result.reply, /Visa Helper/);
+  assert.doesNotMatch(result.reply, /not sent automatically/);
+  assert.doesNotMatch(result.reply, /I still need/);
+  assert.doesNotMatch(result.reply, /ordinary passport/);
+  assert.ok(result.reply.length < 900, `greeting too long: ${result.reply.length}`);
 });
 
 test("a mocked provider failure still returns the local fee snapshot", async () => {

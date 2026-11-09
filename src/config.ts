@@ -20,7 +20,7 @@ export interface AppConfig {
   vaultKey: string;
   deepseekApiKey: string;
   deliveryMode: "preview" | "cloudflare" | "resend";
-  autoReply: "off" | "general_info";
+  autoReply: "off" | "general_info" | "all";
   cloudflareAccountId: string;
   cloudflareEmailToken: string;
   resendApiKey: string;
@@ -73,7 +73,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     );
   }
   const delivery = requiredLiteral(env, "DELIVERY_MODE", ["preview", "cloudflare", "resend"] as const, "preview");
-  const autoReply = requiredLiteral(env, "AUTO_REPLY", ["off", "general_info"] as const, "off");
+  const autoReply = requiredLiteral(env, "AUTO_REPLY", ["off", "general_info", "all"] as const, "off");
   const launch = requiredLiteral(env, "PUBLIC_LAUNCH", ["blocked"] as const, "blocked");
   const mode = requiredLiteral(env, "AGENT_MODE", ["mock", "live"] as const, "mock");
   const config: AppConfig = {

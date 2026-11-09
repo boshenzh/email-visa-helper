@@ -26,7 +26,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, runti
       delivery: runtime.config.deliveryMode,
       publicLaunch: runtime.config.publicLaunch,
       modelCallsOnInbound: Boolean(runtime.modelTransport),
-      emailSending: runtime.config.autoReply === "general_info" && Boolean(runtime.mailTransport),
+      emailSending: runtime.config.autoReply !== "off" && Boolean(runtime.mailTransport),
       resend: {
         state: resendDeliveryState(runtime.config, Boolean(runtime.mailTransport)),
         from: runtime.config.deliveryMode === "resend" ? runtime.config.resendFrom : "",

@@ -118,7 +118,7 @@ export function resendRestTransport(apiKey: string, fetchImpl: typeof fetch): Em
   };
 }
 
-/** Process transport. Resend stays available when AUTO_REPLY=off so an operator can send one stored draft. Cloudflare stays tied to automatic general-info sends. */
+/** Process transport. Resend stays available when AUTO_REPLY=off so an operator can send one stored draft. Cloudflare is built whenever automatic sending is on. */
 export function configuredTransport(config: AppConfig, fetchImpl: typeof fetch): EmailTransport | null {
   if (config.profile !== "synthetic_test" || config.publicLaunch !== "blocked" || config.testSenderAllowlist.length === 0) {
     return null;
@@ -128,7 +128,7 @@ export function configuredTransport(config: AppConfig, fetchImpl: typeof fetch):
   }
   if (
     config.deliveryMode === "cloudflare" &&
-    config.autoReply === "general_info" &&
+    config.autoReply !== "off" &&
     config.cloudflareAccountId &&
     config.cloudflareEmailToken
   ) {
@@ -140,15 +140,32 @@ export function configuredTransport(config: AppConfig, fetchImpl: typeof fetch):
 export function resendDeliveryState(config: AppConfig, transportReady: boolean): "off" | "manual" | "auto" {
   if (config.deliveryMode !== "resend" || !transportReady || !config.resendApiKey || !normalizeEmail(config.resendFrom)) return "off";
   if (config.profile !== "synthetic_test" || config.publicLaunch !== "blocked") return "off";
-  return config.autoReply === "general_info" ? "auto" : "manual";
+  return config.autoReply === "off" ? "manual" : "auto";
+}
+
+const AUTO_ALL_REASONS = new Set([
+  "GENERAL_INFORMATION",
+  "CLERICAL_APPLICANT_CONTROLLED",
+  "REGULATED_REVIEW_REQUIRED",
+  "OUT_OF_SCOPE",
+  "rate_limit",
+  "deleted",
+  "delete_refused",
+]);
+
+/** general_info sends one category. all sends every customer reply to an allowlisted authenticated sender. */
+export function shouldAutoSend(config: AppConfig, draft: OutboxDraft): boolean {
+  if (config.autoReply === "off" || config.profile !== "synthetic_test" || config.publicLaunch !== "blocked") return false;
+  if (config.deliveryMode !== "cloudflare" && config.deliveryMode !== "resend") return false;
+  if (draft.status === "suppressed" || draft.status === "held_unverified") return false;
+  if (!draft.to || !config.testSenderAllowlist.includes(draft.to)) return false;
+  if (config.autoReply === "general_info") return draft.reason === "GENERAL_INFORMATION";
+  if (config.autoReply === "all") return AUTO_ALL_REASONS.has(draft.reason);
+  return false;
 }
 
 export async function maybeAutoSend(store: Store, draft: OutboxDraft, config: AppConfig, transport: EmailTransport | null): Promise<OutboxDraft> {
-  if (config.autoReply !== "general_info") return draft;
-  if (config.deliveryMode !== "cloudflare" && config.deliveryMode !== "resend") return draft;
-  if (draft.reason !== "GENERAL_INFORMATION" || !draft.to) return draft;
-  if (config.profile !== "synthetic_test") return draft;
-  if (!config.testSenderAllowlist.includes(draft.to)) return draft;
+  if (!shouldAutoSend(config, draft)) return draft;
   if (!transport) {
     store.log("send_not_configured", { outboxId: draft.id });
     return draft;
