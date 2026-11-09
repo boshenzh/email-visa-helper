@@ -1,0 +1,39 @@
+# Recreate the container on the existing external network.
+# Do not remove visa-test-ingress, /opt/email-visa-helper/shared, or prior releases.
+# Credentials stay in shared/runtime.env. This file has none.
+services:
+  visa-agent:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    env_file:
+      - path: /opt/email-visa-helper/shared/runtime.env
+        required: true
+    environment:
+      DATA_DIR: /data
+      LISTEN_HOST: 0.0.0.0
+      PORT: "8080"
+      PUBLIC_LAUNCH: blocked
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /opt/email-visa-helper/shared/data:/data
+    networks:
+      - visa-test-ingress
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 128
+    restart: unless-stopped
+
+networks:
+  visa-test-ingress:
+    external: true
+    name: visa-test-ingress

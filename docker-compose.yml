@@ -1,0 +1,55 @@
+# Local scaffold for the existing server. It does not deploy, change DNS, or send mail.
+# Do not point this at production mail. Default command is the mock runtime.
+services:
+  visa-agent:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DEPLOYMENT_PROFILE: dry_run
+      AGENT_MODE: mock
+      AUTO_REPLY: "off"
+      DELIVERY_MODE: preview
+      PUBLIC_LAUNCH: blocked
+      DEEPSEEK_THINKING: disabled
+      DEEPSEEK_MODEL: deepseek-flash
+      DATA_DIR: /data
+      LISTEN_HOST: 0.0.0.0
+      PORT: "8080"
+    volumes:
+      - visa-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: "1.0"
+    pids_limit: 128
+
+  worksheet-sandbox:
+    profiles: ["sandbox"]
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.sandbox
+    user: "10001:10001"
+    read_only: true
+    network_mode: none
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 64
+    tmpfs:
+      - /tmp:size=16m
+    volumes:
+      - ./examples/sandbox-in:/in:ro
+      - sandbox-out:/out
+
+volumes:
+  visa-data:
+  sandbox-out:

@@ -1,0 +1,20 @@
+{
+  "name": "email-visa-helper",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/index.ts",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "sample": "node --experimental-strip-types scripts/sample.ts",
+    "synthetic": "node --experimental-strip-types src/synthetic-cli.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.0"
+  }
+}

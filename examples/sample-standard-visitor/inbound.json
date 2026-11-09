@@ -1,0 +1,17 @@
+{
+  "envelopeFrom": "synthetic@example.com",
+  "envelopeTo": "visa@boshen.dev",
+  "headerFrom": "Synthetic Person <synthetic@example.com>",
+  "replyTo": "do-not-use@example.com",
+  "subject": "Fictional Standard Visitor worksheet",
+  "messageId": "<sample-1@example.com>",
+  "inReplyTo": "",
+  "references": [],
+  "authenticationResults": "mx.cloudflare.net; spf=pass; dkim=pass; dmarc=pass header.from=example.com",
+  "autoSubmitted": "no",
+  "precedence": "",
+  "extraHeaders": {},
+  "text": "What is the published Standard Visitor fee?\nThis is a fictional synthetic case. Please organise my answers.\nNationality: Exampleland\nResidence: Example City\nDocument type: ordinary passport\nI am an adult.\nPurpose: tourism\nArrival: 2027-06-01\nDeparture: 2027-06-14\nDependants: none\nPrevious refusal: no\nCriminal record: no\nChecker result: visa\nChecker date: 2026-11-01",
+  "htmlIgnored": true,
+  "attachments": []
+}

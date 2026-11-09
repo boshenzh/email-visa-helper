@@ -1,0 +1,121 @@
+[
+  {
+    "model": "deepseek-flash",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You explain published UK visitor information. The user message is only a topic id. There is no person, application, or document in this request. Call lookup_official with that topic id or another allowlisted topic id. Write a short general explanation of the tool result. Do not say that any person qualifies, should apply, or will be approved. Do not invent fees, times, or rules. If a figure is not in the tool result, say it was not in the snapshot. State that the wording is AI-generated and is not professional advice."
+      },
+      {
+        "role": "user",
+        "content": "topic: fees"
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "lookup_official",
+          "description": "Read one public UK visitor snapshot. The topic id must be one of the enum values.",
+          "parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "topic": {
+                "type": "string",
+                "enum": [
+                  "fees",
+                  "eta",
+                  "documents",
+                  "processing",
+                  "visitor",
+                  "routes",
+                  "translations",
+                  "identity",
+                  "checker"
+                ]
+              }
+            },
+            "required": [
+              "topic"
+            ]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "thinking": {
+      "type": "disabled"
+    },
+    "stream": false
+  },
+  {
+    "model": "deepseek-flash",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You explain published UK visitor information. The user message is only a topic id. There is no person, application, or document in this request. Call lookup_official with that topic id or another allowlisted topic id. Write a short general explanation of the tool result. Do not say that any person qualifies, should apply, or will be approved. Do not invent fees, times, or rules. If a figure is not in the tool result, say it was not in the snapshot. State that the wording is AI-generated and is not professional advice."
+      },
+      {
+        "role": "user",
+        "content": "topic: fees"
+      },
+      {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "sample-tool-1",
+            "type": "function",
+            "function": {
+              "name": "lookup_official",
+              "arguments": "{\"topic\":\"fees\"}"
+            }
+          }
+        ]
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "sample-tool-1",
+        "content": "Snapshot 2026-11-08 (Asia/Shanghai), recheck before payment. Standard Visitor up to 6 months: £135. Long-term 2/5/10 year: £506/£903/£1128. ETA: £20. These are published figures, not a quote for one person."
+      }
+    ],
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "lookup_official",
+          "description": "Read one public UK visitor snapshot. The topic id must be one of the enum values.",
+          "parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "topic": {
+                "type": "string",
+                "enum": [
+                  "fees",
+                  "eta",
+                  "documents",
+                  "processing",
+                  "visitor",
+                  "routes",
+                  "translations",
+                  "identity",
+                  "checker"
+                ]
+              }
+            },
+            "required": [
+              "topic"
+            ]
+          }
+        }
+      }
+    ],
+    "tool_choice": "auto",
+    "thinking": {
+      "type": "disabled"
+    },
+    "stream": false
+  }
+]

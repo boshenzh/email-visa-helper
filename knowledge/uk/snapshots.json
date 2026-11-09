@@ -1,0 +1,178 @@
+{
+  "accessed": "2026-11-08",
+  "accessedTimezone": "Asia/Shanghai",
+  "recheckBeforeUse": true,
+  "notPermanent": true,
+  "note": "Published snapshots for signposting. Not a determination of what any person must pay, wait, or file. Re-fetch the linked pages before quoting them to an applicant or taking a payment.",
+  "feesGbp": {
+    "standardVisitorUpTo6Months": 135,
+    "longTerm2Year": 506,
+    "longTerm5Year": 903,
+    "longTerm10Year": 1128,
+    "medicalUpTo11Months": 234,
+    "academicUpTo12Months": 234,
+    "eta": 20,
+    "visitorInTransitLandside": 74.5,
+    "directAirsideTransit": 41.5
+  },
+  "feeNotes": [
+    "Standard Visitor up to 6 months was £135 on the Standard Visitor apply page and on the Home Office fee table (fee from 8 April 2026).",
+    "The 2-year visitor fee row has a footnote: application fee of £135 where the applicant is a Chinese national applying in mainland China under the Chinese visa scheme. That footnote is not a substitute for the official checker and is not applied by this demo as a personal fee.",
+    "Long-term visitor visas were listed at £506 / £903 / £1,128 for 2 / 5 / 10 years. The apply page says each visit is normally up to 6 months, not continuous residence.",
+    "ETA was £20 on gov.uk/eta and on the fee table. The apply page says the charge is per application, including when applying for other people, and children need their own ETA.",
+    "Medical (up to 11 months) and academic (up to 12 months) visitor fees were £234. Those routes are outside this demo.",
+    "Optional priority services and local-currency collection are not copied here."
+  ],
+  "times": {
+    "standardVisitor": "3 weeks",
+    "marriageVisitor": "3 weeks",
+    "transit": "3 weeks",
+    "student": "3 weeks",
+    "skilledWorker": "3 weeks",
+    "familyOutsideUk": "12 weeks",
+    "etaUsual": "usually within a day; allow up to 3 working days"
+  },
+  "timeNotes": [
+    "The Standard Visitor apply page says a decision usually arrives within 3 weeks after the online application, identity, and documents.",
+    "The outside-UK processing-times page, updated 9 September 2026, lists Standard Visitor, Marriage Visitor, and Transit as 3 weeks, and partner/spouse, parent, child, and adult-relative family applications as 12 weeks.",
+    "That page says processing starts at identity verification or the VAC biometric appointment, not when an email or worksheet is drafted. Verification, further evidence, interviews, demand, or outages can take longer. It says UKVI will not reimburse travel or other expenses if an application is refused or delayed.",
+    "ETA apply page: usually a decision by email within a day, but it can take up to 3 working days. Wait for the confirmation email before travel. No faster decision by using another website."
+  ],
+  "identityOutcome": {
+    "visitorApplyPage": "The Standard Visitor apply page says the passport or travel document is returned on the same day of the VAC appointment, and a successful applicant gets an eVisa accessed through a UKVI account, usually immediately and possibly up to 24 hours.",
+    "processingPage": "The general outside-UK processing page says that if you attended a VAC and left your passport, you should not return to the VAC until you have been contacted.",
+    "demoRule": "These statements conflict for an individual VAC. This demo does not choose between them. Escalate, and follow the instructions on the applicant's own UKVI or VAC message. Never ask for a passport to be posted to this inbox."
+  },
+  "eligibilityNotes": [
+    "Standard Visitor overview: usually up to 6 months; tourism, visiting family or friends, and some other permitted activities. Not every business or work activity is allowed. Work, public funds, and marriage or civil-partnership notice are outside the ordinary visitor permission described there.",
+    "Appendix V: Visitor, V 4.2, requires the decision maker to be satisfied the person is a genuine visitor: will leave at the end, will not make the UK their main home through frequent or successive visits, seeks a permitted purpose, will not do prohibited activities, and has sufficient funds for reasonable costs, dependants, and the return or onward journey without working or public funds.",
+    "V 4.3 says a third party may provide travel, maintenance, and accommodation only with a genuine relationship, without a breach of immigration laws, and if they can and will provide the support.",
+    "No universal minimum bank balance and no universal six-month bank-statement rule were stated on the supporting-documents guide reviewed on the access date. Do not invent one. The guide does ask for evidence of access to funds and the origin of funds. It lists bank statements or letters issued more than 1 year before the application as less useful."
+  ],
+  "documents": {
+    "updated": "2026-10-08",
+    "url": "https://www.gov.uk/government/publications/visitor-visa-guide-to-supporting-documents/guide-to-supporting-documents-visiting-the-uk",
+    "menu": [
+      "Valid passport or travel document.",
+      "Information about home circumstances and the permitted activity, which may include employment, study, or self-employment evidence.",
+      "Confirmation of legal residence if applying outside the country of nationality.",
+      "Financial documents showing access to funds and the origin of those funds.",
+      "Invitation or activity evidence where relevant.",
+      "If someone else pays: what support is offered, that they can provide it, the relationship, and their UK status if they are in the UK."
+    ],
+    "lessUseful": [
+      "Hotel bookings",
+      "Flight bookings unless transiting",
+      "Credit-card statements",
+      "Photocopies of bank cards",
+      "Bank statements or letters issued more than 1 year before the application",
+      "Many generic certificates, photographs, and sponsor utility bills"
+    ],
+    "translations": "Documents that are not in English or Welsh need a full translation that can be independently verified, with the translator's confirmation of accuracy, the date, their full name and signature, and contact details. An AI translation draft is not that confirmation.",
+    "bookings": "The supporting-documents guide lists hotel bookings and non-transit flight bookings as less useful and says a visa or entry is not guaranteed, so bookings should be made with that in mind. The processing-times page says not to book travel until there is a decision."
+  },
+  "applicationMechanics": [
+    "Apply online while outside the UK if a Standard Visitor visa is required. The earliest application is 3 months before travel.",
+    "Each person, including a partner or child, needs their own application, fee, and appointment.",
+    "The worksheet this demo writes is not an application, a declaration, or a payment.",
+    "Do not collect biometrics, one-time codes, UKVI passwords, or card numbers.",
+    "The apply page says identity is proved at a visa application centre, which may be in another country, with a photograph and fingerprints."
+  ],
+  "eta": {
+    "url": "https://www.gov.uk/eta",
+    "applyUrl": "https://www.gov.uk/eta/apply",
+    "notes": [
+      "An ETA is not a visa and does not guarantee entry.",
+      "It costs £20 in the snapshot. It lasts 2 years or until the passport expires, whichever is sooner, and is linked to the passport used to apply.",
+      "Each travelling person needs one, including babies and children.",
+      "British or Irish passport holders, and people with permission to live, work, or study in the UK, are examples of people who do not need an ETA. The list on the page is not exhaustive.",
+      "What a person needs depends on nationality, purpose, and other circumstances. Use https://www.gov.uk/check-uk-visa. This demo does not store a nationality list and does not decide visa versus ETA."
+    ]
+  },
+  "routes": [
+    {
+      "id": "standard_visitor",
+      "label": "Tourism, visiting family or friends, and some short permitted activities",
+      "url": "https://www.gov.uk/standard-visitor",
+      "demo": "General information and applicant-controlled worksheets only."
+    },
+    {
+      "id": "checker",
+      "label": "Check if you need a UK visa",
+      "url": "https://www.gov.uk/check-uk-visa",
+      "demo": "Ask the applicant to use the checker and record what they say it showed, with the date. Not our result."
+    },
+    {
+      "id": "eta",
+      "label": "Electronic travel authorisation",
+      "url": "https://www.gov.uk/eta",
+      "demo": "Explain the published ETA pages after the applicant reports a checker result. Do not decide that they need one."
+    },
+    {
+      "id": "student",
+      "label": "Student visa",
+      "url": "https://www.gov.uk/student-visa",
+      "demo": "Signpost only. Sponsor, funds, English, age, and dependant rules are not implemented."
+    },
+    {
+      "id": "skilled_worker",
+      "label": "Skilled Worker",
+      "url": "https://www.gov.uk/skilled-worker-visa",
+      "demo": "Signpost only. No eligibility or salary check."
+    },
+    {
+      "id": "family",
+      "label": "Family visa",
+      "url": "https://www.gov.uk/uk-family-visa",
+      "demo": "Signpost. A family visit is not permission to live in the UK."
+    },
+    {
+      "id": "transit",
+      "label": "Transit",
+      "url": "https://www.gov.uk/transit-visa",
+      "demo": "Airside Direct Airside Transit versus landside Visitor in Transit, normally within 48 hours. Longer stays are generally a Standard Visitor question. Exemptions depend on circumstances. The airline can say whether the journey goes through border control."
+    },
+    {
+      "id": "marriage",
+      "label": "Marriage Visitor",
+      "url": "https://www.gov.uk/marriage-visa",
+      "demo": "Not an ordinary Standard Visitor activity. Signpost the checker and a qualified adviser."
+    },
+    {
+      "id": "adviser",
+      "label": "Find an immigration adviser",
+      "url": "https://www.gov.uk/find-an-immigration-adviser",
+      "demo": "Referral link for personalised advice, refusals, and complex cases."
+    },
+    {
+      "id": "appendix_v",
+      "label": "Immigration Rules Appendix V: Visitor",
+      "url": "https://www.gov.uk/guidance/immigration-rules/immigration-rules-appendix-v-visitor",
+      "demo": "Primary rules include V 4.2 and V 4.3. This demo does not apply them to a person."
+    },
+    {
+      "id": "visa_nationals",
+      "label": "Appendix Visitor: Visa national list",
+      "url": "https://www.gov.uk/guidance/immigration-rules/immigration-rules-appendix-visitor-visa-national-list",
+      "demo": "The list exists and has exceptions. It is intentionally not copied into prompts or used as an automated verdict."
+    },
+    {
+      "id": "fees",
+      "label": "Home Office immigration and nationality fees, 8 April 2026",
+      "url": "https://www.gov.uk/government/publications/visa-regulations-revised-table/home-office-immigration-and-nationality-fees-8-april-2026",
+      "demo": "Fee table updated 10 September 2026. Snapshot only."
+    },
+    {
+      "id": "processing",
+      "label": "Visa processing times outside the UK",
+      "url": "https://www.gov.uk/visa-processing-times",
+      "demo": "Updated 9 September 2026."
+    },
+    {
+      "id": "apply",
+      "label": "Apply for a Standard Visitor visa",
+      "url": "https://www.gov.uk/standard-visitor/apply-standard-visitor-visa",
+      "demo": "Official application channel. This inbox does not submit it."
+    }
+  ]
+}
