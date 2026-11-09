@@ -17,6 +17,8 @@ export interface OutboundMessage {
   replyTo: string;
   inReplyTo: string;
   references: string[];
+  /** Raw file text. The Resend adapter base64-encodes it into attachments. */
+  attachments?: { filename: string; contentType: string; content: string }[];
 }
 
 export interface EmailTransport {
@@ -90,6 +92,13 @@ export function resendRestTransport(apiKey: string, fetchImpl: typeof fetch): Em
       };
       if (message.replyTo) body.reply_to = message.replyTo;
       if (Object.keys(emailHeaders).length > 0) body.headers = emailHeaders;
+      if (message.attachments && message.attachments.length > 0) {
+        body.attachments = message.attachments.map((file) => ({
+          filename: file.filename,
+          content: Buffer.from(file.content, "utf8").toString("base64"),
+          content_type: file.contentType,
+        }));
+      }
       const encoded = JSON.stringify(body);
       let last: Error = new MailTransientError("send failed");
       for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -234,6 +243,9 @@ export async function dispatchOutbox(
       replyTo,
       inReplyTo: current.inReplyTo,
       references: current.references,
+      attachments: current.packFile
+        ? [{ filename: current.packFile.filename, contentType: current.packFile.contentType, content: current.packFile.text }]
+        : undefined,
     });
     const sent: OutboxDraft = { ...queued, status: "sent", providerMessageId: result.messageId };
     store.writeOutbox(sent);

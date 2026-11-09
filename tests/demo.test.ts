@@ -966,7 +966,7 @@ test("automatic resend stays on general information for an allowlisted sender", 
   const quiet = await send(auto, { messageId: "resend-auto-hi", text: "hi" });
   assert.equal(auto.store.readOutbox(quiet.outboxId ?? "")?.status, "sent");
   assert.doesNotMatch(quiet.reply, /not sent automatically/);
-  assert.doesNotMatch(quiet.reply, /ordinary passport/);
+  assert.match(quiet.reply, /qualified immigration adviser/);
 });
 
 test("AUTO_REPLY=all sends intake, escalation, and refusal to the allowlisted sender", async () => {
@@ -989,8 +989,8 @@ test("AUTO_REPLY=all sends intake, escalation, and refusal to the allowlisted se
   };
   const hi = await send(runtime, { messageId: "all-hi", subject: "hi", text: "Hi!" });
   assert.equal(runtime.store.readOutbox(hi.outboxId ?? "")?.status, "sent");
-  assert.match(hi.reply, /how long you can stay/);
-  assert.doesNotMatch(hi.reply, /ordinary passport/);
+  assert.match(hi.reply, /Step 1 of 6/);
+  assert.equal((hi.reply.match(/ordinary passport/gi) ?? []).length, 1);
   assert.doesNotMatch(hi.reply, /not sent automatically/);
   const fee = await send(runtime, { messageId: "all-fee", text: "What is the Standard Visitor fee?" });
   assert.equal(runtime.store.readOutbox(fee.outboxId ?? "")?.status, "sent");

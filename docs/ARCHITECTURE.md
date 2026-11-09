@@ -46,6 +46,8 @@ verified inbound → dedupe → loop / auth / rate gates
 
 Categories are `GENERAL_INFORMATION`, `CLERICAL_APPLICANT_CONTROLLED`, `REGULATED_REVIEW_REQUIRED`, and `OUT_OF_SCOPE`. Uncertainty becomes review.
 
+A visitor preparation case also stores a stage: `INTAKE`, `ROUTE_CHECK`, `PURPOSE_AND_TRIP`, `DOCUMENT_CHECKLIST`, `DOCUMENT_TRACKING`, `SUPPORTING_LETTERS`, `FINAL_PACK`, then `DONE`. Refusals, minors, work, study, and marriage go to `ESCALATED` instead. Each reply names the step, asks only that step’s questions, and moves on when those facts are already stored. The final pack is in the email and, on a Resend send, attached as `uk-visitor-preparation-pack.md`. A Chinese message is answered in Chinese. Personal facts stay in the local templates; the model still sees only a public topic id.
+
 Tools the local policy may call: `lookup_official`, `list_gaps`, `build_worksheet`, `flag_review`. Arguments are checked. A tool cannot choose a recipient, a shell command, or a deletion. Worksheet writing is refused unless the category is the clerical one. Deletion is a separate authenticated path.
 
 Budgets, from the environment and overridable in tests: 6 model steps, 8 tool actions, wall-clock limit, token estimate, and a cost ceiling used only by the synthetic adapter. The cost table is the published peak cache-miss price on 2026-11-08, used as a local ceiling, not an invoice. Unknown model ids are rejected rather than priced.

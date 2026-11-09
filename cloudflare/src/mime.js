@@ -1,4 +1,4 @@
-/** Minimal MIME reader for the email worker. HTML is ignored. Attachment bytes are not returned. */
+/** Minimal MIME reader. Plain text wins. An HTML-only body is reduced to text. Attachment bytes are not returned. */
 
 export function extractTextPlain(raw) {
   const text = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
@@ -12,7 +12,9 @@ export function extractTextPlain(raw) {
     if (!boundary) return { text: "", htmlIgnored: true, attachments: [] };
     return parseMultipart(body, boundary[1]);
   }
-  if (/text\/html/i.test(contentType)) return { text: "", htmlIgnored: true, attachments: [] };
+  if (/text\/html/i.test(contentType)) {
+    return { text: htmlToText(decodeBody(body, headers["content-transfer-encoding"])).slice(0, 20_000), htmlIgnored: false, attachments: [] };
+  }
   if (/text\/plain/i.test(contentType) || !headers["content-type"]) {
     return { text: decodeBody(body, headers["content-transfer-encoding"]).slice(0, 20_000), htmlIgnored: true, attachments: [] };
   }
@@ -47,6 +49,7 @@ function parseHeaders(blob) {
 function parseMultipart(body, boundary) {
   const parts = body.split(new RegExp(`--${escapeRegExp(boundary)}`));
   let text = "";
+  let htmlText = "";
   let htmlIgnored = false;
   const attachments = [];
   for (const part of parts) {
@@ -63,14 +66,30 @@ function parseMultipart(body, boundary) {
       continue;
     }
     if (/text\/html/i.test(type)) {
-      htmlIgnored = true;
+      htmlText += htmlToText(decodeBody(content, headers["content-transfer-encoding"]));
       continue;
     }
     if (/text\/plain/i.test(type)) {
       text += decodeBody(content, headers["content-transfer-encoding"]);
     }
   }
-  return { text: text.slice(0, 20_000), htmlIgnored, attachments };
+  if (text.trim()) return { text: text.slice(0, 20_000), htmlIgnored: htmlText.trim().length > 0, attachments };
+  if (htmlText.trim()) return { text: htmlText.slice(0, 20_000), htmlIgnored: false, attachments };
+  return { text: "", htmlIgnored, attachments };
+}
+
+function htmlToText(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_, digits) => String.fromCharCode(Number(digits)))
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function decodeBody(content, encoding) {

@@ -157,6 +157,8 @@ curl -s http://127.0.0.1:8080/health
 
 Expect `"delivery":"resend"`, `"autoReply":"all"`, `"emailSending":true`, `"publicLaunch":"blocked"`, and `"resend":{"state":"auto","from":"Visa Helper (AI) <visa@boshen.dev>","replyTo":"visa@boshen.dev"}`. `autoReply` is the mode: `off`, `general_info`, or `all`. `resend.state` is `manual` while `AUTO_REPLY=off`, and `off` when Resend is not selected.
 
+A preparation case moves through `INTAKE`, `ROUTE_CHECK`, `PURPOSE_AND_TRIP`, `DOCUMENT_CHECKLIST`, `DOCUMENT_TRACKING`, `SUPPORTING_LETTERS`, `FINAL_PACK`, and `DONE`. The pack email includes the facts, checklist, form answers, drafts, the snapshot fee, and the official next steps. Resend attaches `uk-visitor-preparation-pack.md` and sends a new file when a fact changes. Minors, refusals, criminal issues, work, study, and marriage stop at `ESCALATED`.
+
 Send one existing draft. `OUTBOX_ID` is the 32-character id already in the outbox. The body must be empty. A public client address is refused. The ingress token is refused.
 
 ```bash

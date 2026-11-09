@@ -1,8 +1,10 @@
 import type { Intake } from "./intake.ts";
+import { renderStageReply } from "./journey.ts";
 import type { Snapshots } from "./knowledge.ts";
+import type { PrepStage, ReplyLanguage } from "./types.ts";
 
 const IDENTITY =
-  "I’m the AI preparation assistant for visa@boshen.dev. I’m not a regulated immigration adviser, and I can’t guarantee a visa.";
+  "I’m the AI preparation assistant for visa@boshen.dev. I’m an AI, not a human, and I’m not a regulated immigration adviser. I can’t guarantee a visa.";
 const NO_SCANS = "Please don’t email passport scans, bank statements, passwords, or payment details.";
 const CHECKER = "I will not decide visa, ETA, or neither. Checker: https://www.gov.uk/check-uk-visa.";
 const SUBMITTED = "Nothing has been submitted or paid.";
@@ -24,9 +26,11 @@ function questions(missing: string[]): string {
   return lines.map((item) => `- ${item}`).join("\n");
 }
 
-function letter(paragraphs: string[]): string {
+function letter(paragraphs: string[], lang: ReplyLanguage = "en"): string {
+  const hello = lang === "zh" ? "你好，" : "Hello,";
+  const sign = lang === "zh" ? "签证准备助手" : "Visa Helper";
   const body = paragraphs.map((part) => part.trim()).filter(Boolean);
-  return `Hello,\n\n${body.join("\n\n")}\n\nVisa Helper\n`;
+  return `${hello}\n\n${body.join("\n\n")}\n\n${sign}\n`;
 }
 
 export function composeReply(input: {
@@ -38,44 +42,54 @@ export function composeReply(input: {
   killed: boolean;
   modelExplanation?: string | null;
   note?: string;
+  stage?: PrepStage;
+  worksheetUpdated?: boolean;
 }): string {
+  const lang = input.intake.language ?? "en";
   if (input.killed) {
-    return letter([IDENTITY, "This inbox is paused. Nothing has been submitted."]);
+    return letter([IDENTITY, lang === "zh" ? "这个邮箱暂停了。没有向官方提交。" : "This inbox is paused. Nothing has been submitted."], lang);
   }
   if (input.deleted) {
     return letter([
       IDENTITY,
-      "I deleted the local case bound to this verified email address. I did not delete anything held by a visa authority or by a model provider.",
-    ]);
-  }
-  if (input.intake.bareGreeting) {
-    return letter([
-      IDENTITY,
-      "I can help with general UK visitor questions. For example: what the published fees are, which documents the official pages mention, and how long you can stay.",
-      `${CHECKER}`,
-      NO_SCANS,
-      "Reply with your question and I’ll answer from the published pages.",
-    ]);
+      lang === "zh"
+        ? "我删除了绑定这个已验证邮箱的本地案件。签证机关或模型服务商保存的副本没有删除。"
+        : "I deleted the local case bound to this verified email address. I did not delete anything held by a visa authority or by a model provider.",
+    ], lang);
   }
   if (input.intake.category === "OUT_OF_SCOPE") {
     return letter([
-      "Thanks for writing. I’m the AI preparation assistant for visa@boshen.dev, and this inbox only helps with UK visa preparation, so I’m unable to help with that request.",
-    ]);
+      lang === "zh"
+        ? "谢谢来信。我是 visa@boshen.dev 的人工智能准备助手，不是人类顾问。这个邮箱只帮助准备英国签证材料，所以我无法处理这个请求。"
+        : "Thanks for writing. I’m the AI preparation assistant for visa@boshen.dev, and this inbox only helps with UK visa preparation, so I’m unable to help with that request.",
+    ], lang);
   }
-  const parts: string[] = [IDENTITY];
-  if (input.intake.injectionIgnored) {
-    parts.push("I ignored instructions in the message that tried to change my role, my tools, or who receives a reply.");
+  if (input.stage === "ESCALATED" && input.intake.category !== "REGULATED_REVIEW_REQUIRED") {
+    return letter([
+      IDENTITY,
+      "Escalated to a qualified adviser",
+      "This case already needs a qualified immigration adviser, so I will not continue the visitor preparation pack.",
+      NO_SCANS,
+      SUBMITTED,
+    ], lang);
   }
-  if (input.stopped === "provider_failure") {
-    parts.push("The model service did not answer. The note below is the local published snapshot, not an AI explanation.");
+  if (input.intake.category === "REGULATED_REVIEW_REQUIRED" || input.stage === "ESCALATED") {
+    return letter([IDENTITY, "Escalated to a qualified adviser", focusedBody(input), NO_SCANS, SUBMITTED], lang);
   }
-  if (input.modelExplanation) {
-    parts.push(`AI-generated general explanation of the published pages, not about you:\n${input.modelExplanation}`);
-  }
-  parts.push(focusedBody(input));
-  if (input.downloadPath) parts.push(`A local export for this verified sender is at ${input.downloadPath}. It is not a public link.`);
-  parts.push(NO_SCANS, input.note ?? "", SUBMITTED);
-  return letter(parts);
+  return renderStageReply({
+    facts: input.intake.facts,
+    stage: input.stage ?? "INTAKE",
+    language: lang,
+    snapshots: input.snapshots,
+    publicTopic: input.intake.publicTopic,
+    modelExplanation: lang === "zh" ? null : input.modelExplanation,
+    mentionsFunds: input.intake.mentionsFunds,
+    note: input.note,
+    worksheetUpdated: Boolean(input.worksheetUpdated),
+    downloadPath: input.downloadPath,
+    injectionIgnored: input.intake.injectionIgnored,
+    stopped: input.stopped,
+  });
 }
 
 function focusedBody(input: { snapshots: Snapshots; intake: Intake }): string {

@@ -2,8 +2,9 @@ import crypto from "node:crypto";
 import type { AppConfig } from "./config.ts";
 import { renderReviewNote, renderSourceLedger, renderUnknowns, renderWorksheet } from "./artifacts.ts";
 import { runPublicTopicLoop } from "./deepseek.ts";
-import { classify, emptyFacts, extractFacts, publicText, type Intake } from "./intake.ts";
+import { classify, emptyFacts, extractFacts, messageLanguage, publicText, type Intake } from "./intake.ts";
 import { loadSnapshots } from "./knowledge.ts";
+import { packFingerprint, renderPackMarkdown, resolveStage, type StagePrior } from "./journey.ts";
 import { maybeAutoSend, type EmailTransport } from "./mail.ts";
 import { composeReply } from "./reply.ts";
 import {
@@ -14,7 +15,7 @@ import {
   sha256,
 } from "./security.ts";
 import { Store } from "./store.ts";
-import type { AttachmentMeta, InboundEvent, InboundResult, OutboxDraft } from "./types.ts";
+import type { AttachmentMeta, InboundEvent, InboundResult, OutboxDraft, PrepStage } from "./types.ts";
 
 export interface Runtime {
   config: AppConfig;
@@ -166,6 +167,21 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
   const extracted = extractFacts(text, previous);
   const intake = classify(text, extracted.facts, extracted.changedNationality, Boolean(existing));
   const preserveCase = Boolean(existing) && (intake.category === "OUT_OF_SCOPE" || intake.bareGreeting);
+  const prior: StagePrior = {
+    checklistDelivered: existing?.checklistDelivered ?? false,
+    lettersDelivered: existing?.lettersDelivered ?? false,
+    packHash: existing?.packHash ?? "",
+  };
+  intake.language = messageLanguage(text, existing?.language);
+  const fingerprint = packFingerprint(intake.facts, snapshots.feesGbp.standardVisitorUpTo6Months);
+  const stage: PrepStage =
+    intake.category === "REGULATED_REVIEW_REQUIRED"
+      ? "ESCALATED"
+      : existing && intake.category === "OUT_OF_SCOPE"
+        ? existing.stage
+        : existing?.stage === "ESCALATED" && intake.bareGreeting
+          ? "ESCALATED"
+          : resolveStage(prior, intake.facts, false, fingerprint);
   secrets.push(extracted.facts.nationality, extracted.facts.residence);
   if (intake.deleteRequested) {
     if (existing && existing.sender === sender.email) {
@@ -204,6 +220,11 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
     artifactNames: existing?.artifactNames ?? [],
     consentNoticeShown: true,
     vaultMode: config.vaultKey.length >= 16 ? "aes-256-gcm" as const : "plaintext-demo" as const,
+    stage,
+    language: intake.language,
+    packHash: stage === "FINAL_PACK" ? fingerprint : (existing?.packHash ?? ""),
+    checklistDelivered: Boolean(existing?.checklistDelivered) || stage === "DOCUMENT_CHECKLIST" || stage === "DOCUMENT_TRACKING" || stage === "SUPPORTING_LETTERS" || stage === "FINAL_PACK" || stage === "DONE",
+    lettersDelivered: Boolean(existing?.lettersDelivered) || stage === "SUPPORTING_LETTERS" || stage === "FINAL_PACK" || stage === "DONE",
   };
   store.writeCase(record);
   if (!(existing && (intake.category === "OUT_OF_SCOPE" || intake.bareGreeting))) store.writeVault(caseId, intake.facts);
@@ -230,6 +251,7 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
     topic: intake.publicTopic,
     secrets,
     category: intake.category,
+    language: intake.language,
   });
   for (const request of model.requests) store.logModel(request);
   let downloadPath: string | null = null;
@@ -250,8 +272,11 @@ export async function handleInbound(raw: unknown, runtime: Runtime): Promise<Inb
     deleted: false,
     killed: false,
     modelExplanation: model.explanation,
+    stage,
+    worksheetUpdated: refreshWorksheet,
   });
-  const created = makeDraft(parsed, caseId, threadId, sender.email, reply, "draft", intake.category);
+  const packText = stage === "FINAL_PACK" ? renderPackMarkdown(intake.facts, snapshots, intake.language) : null;
+  const created = makeDraft(parsed, caseId, threadId, sender.email, reply, "draft", intake.category, packText);
   store.writeOutbox(created);
   const draft = await maybeAutoSend(store, created, config, runtime.mailTransport ?? null);
   store.log(
@@ -291,7 +316,11 @@ async function explainPublicTopic(input: {
   topic: Intake["publicTopic"];
   secrets: string[];
   category: Intake["category"];
+  language: Intake["language"];
 }): Promise<{ requests: unknown[]; explanation: string | null; toolNames: string[]; stopped: string; reason: string }> {
+  if (input.language === "zh") {
+    return { requests: [], explanation: null, toolNames: [], stopped: "not_called", reason: "local_language" };
+  }
   if (!input.topic) {
     const reason = input.category === "OUT_OF_SCOPE" ? "out_of_scope" : input.category === "REGULATED_REVIEW_REQUIRED" ? "personal_or_uncertain" : "no_public_topic";
     return { requests: [], explanation: null, toolNames: [], stopped: "not_called", reason };
@@ -351,6 +380,7 @@ function makeDraft(
   text: string,
   status: OutboxDraft["status"],
   reason: string,
+  packText: string | null = null,
 ): OutboxDraft {
   const id = crypto.randomBytes(16).toString("hex");
   return {
@@ -369,6 +399,9 @@ function makeDraft(
     createdAt: new Date().toISOString(),
     inReplyTo: event.messageId,
     references: [...event.references, event.messageId].slice(-20),
+    packFile: packText
+      ? { filename: "uk-visitor-preparation-pack.md", contentType: "text/markdown; charset=utf-8", text: packText }
+      : null,
   };
 }
 
@@ -403,6 +436,7 @@ function killedIntake(): Intake {
     publicTopic: null,
     mentionsFunds: false,
     bareGreeting: false,
+    language: "en",
   };
 }
 
