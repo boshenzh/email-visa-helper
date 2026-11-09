@@ -39,7 +39,7 @@ INGRESS_TOKEN=replace-with-a-long-random-string
 OPERATOR_TOKEN=replace-with-a-different-long-random-string
 ```
 
-`dry_run` refuses `AGENT_MODE=live`, `AUTO_REPLY=general_info`, and `DELIVERY_MODE=cloudflare`. The process exits instead of silently going live.
+`dry_run` refuses `AGENT_MODE=live`, `AUTO_REPLY=general_info`, and `DELIVERY_MODE=cloudflare` or `resend`. `DELIVERY_MODE=resend` also exits at startup when `RESEND_API_KEY` or `RESEND_FROM` is missing. The process exits instead of silently going live.
 
 ## Start
 
@@ -57,7 +57,7 @@ Check:
 curl -s http://127.0.0.1:8080/health
 ```
 
-Expect `"profile":"dry_run"`, `"publicLaunch":"blocked"`, `"autoReply":"off"`, and `"modelCallsOnInbound":false`.
+Expect `"profile":"dry_run"`, `"publicLaunch":"blocked"`, `"autoReply":"off"`, `"modelCallsOnInbound":false`, and `"resend":{"state":"off","from":"","replyTo":""}`.
 
 ## Synthetic model check without email
 
@@ -120,6 +120,55 @@ docker inspect visa-test-ingress --format '{{.Name}}'
 
 `deploy/docker-compose.vps.yml` joins the existing external network. It does not create a replacement network and it does not contain credentials. It reads `/opt/email-visa-helper/shared/runtime.env` and stores cases in `/opt/email-visa-helper/shared/data`. Recreating the container must leave it on `visa-test-ingress`. Do not run `docker network rm visa-test-ingress` and do not prune volumes. Public launch stays blocked. Sending stays off unless that env file also sets the general-info switches, which the current test file does not.
 
-Sending from the Node process stays off until you also set `AUTO_REPLY=general_info`, `DELIVERY_MODE=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, and `CLOUDFLARE_EMAIL_API_TOKEN`. Even then, only a general-information draft goes out, and only to the allowlisted authenticated sender. Worksheets and review cases stay in the outbox.
+Automatic sending stays off until you also set `AUTO_REPLY=general_info` and a delivery mode. Cloudflare Email Sending (`DELIVERY_MODE=cloudflare`, `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_EMAIL_API_TOKEN`) is not available on the Workers Free plan. On this account use Resend instead. Even then, only a general-information draft goes out automatically, and only to the allowlisted authenticated sender. Worksheets and review cases stay in the outbox. `Reply-To` and addresses in the body are never the recipient. `PUBLIC_LAUNCH` stays `blocked`. A `sent` or `queued` row is not sent again. HTTP 429 and 5xx are retried up to three times.
+
+## One Resend proof, by hand
+
+Leave `AUTO_REPLY=off`. In `/opt/email-visa-helper/shared/runtime.env`, change only these lines:
+
+```bash
+DELIVERY_MODE=resend
+RESEND_API_KEY=set-on-this-host-only
+RESEND_FROM=Visa Helper (AI) <visa@boshen.dev>
+```
+
+Keep the rest of the current test file:
+
+```bash
+DEPLOYMENT_PROFILE=synthetic_test
+AGENT_MODE=live
+AUTO_REPLY=off
+PUBLIC_LAUNCH=blocked
+MAILBOX=visa@boshen.dev
+TEST_SENDER_ALLOWLIST=the-mailbox-that-may-receive-the-proof
+```
+
+`RESEND_FROM` is the From header. `reply_to` is `MAILBOX`, which is `visa@boshen.dev`. The recipient is the address already stored on the outbox row, which is the DMARC-authenticated sender, and it must be on `TEST_SENDER_ALLOWLIST`. The send route and the CLI do not accept a recipient argument.
+
+Recreate the container with the command above. Do not publish port 8080 on a public interface. `deploy/docker-compose.vps.yml` keeps `127.0.0.1:8080:8080`.
+
+Check:
+
+```bash
+curl -s http://127.0.0.1:8080/health
+```
+
+Expect `"delivery":"resend"`, `"autoReply":"off"`, `"emailSending":false`, `"publicLaunch":"blocked"`, and `"resend":{"state":"manual","from":"Visa Helper (AI) <visa@boshen.dev>","replyTo":"visa@boshen.dev"}`. `state` is `auto` only after `AUTO_REPLY=general_info`. `state` is `off` when Resend is not selected.
+
+Send one existing draft. `OUTBOX_ID` is the 32-character id already in the outbox. The body must be empty. A public client address is refused. The ingress token is refused.
+
+```bash
+curl -s -X POST "http://127.0.0.1:8080/v1/outbox/${OUTBOX_ID}/send" \
+  -H "authorization: Bearer $OPERATOR_TOKEN"
+```
+
+The same action from inside the container, with no extra argument:
+
+```bash
+docker compose -f deploy/docker-compose.vps.yml exec -T visa-agent \
+  node --experimental-strip-types src/send-outbox.ts "$OUTBOX_ID"
+```
+
+A successful row has `"status":"sent"`. Calling either command again does not send a second time. Do not set `PUBLIC_LAUNCH` to anything but `blocked`. Do not put `RESEND_API_KEY` in git or in this archive.
 
 Do not change existing MX, SPF, DKIM, or other routing rules as part of unpacking this archive. Public launch remains blocked. This is not a legal clearance to give personalised immigration advice.

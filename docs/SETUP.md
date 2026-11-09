@@ -25,7 +25,7 @@ Expect `autoReply` `off`, `delivery` `preview`, `publicLaunch` `blocked`, and `m
 
 A verified inbound event is `POST /v1/email/inbound` with `Authorization: Bearer $INGRESS_TOKEN`. The tests build that event. Without a Cloudflare `Authentication-Results` header from `mx.cloudflare.net` showing `dmarc=pass`, the runtime does not attach the message to a case.
 
-Operator routes use a different token (`OPERATOR_TOKEN`): approve an outbox item, delete a case by id, or run the demo TTL sweep. The ingress token cannot do those.
+Operator routes use a different token (`OPERATOR_TOKEN`): approve an outbox item, send one stored draft, delete a case by id, or run the demo TTL sweep. The ingress token cannot do those. The send route also refuses a public client address.
 
 ## 2. Live model, later
 
@@ -44,14 +44,14 @@ There is no verified API promise of zero retention, no training, or a particular
 
 Leave `AUTO_REPLY=off` and `DELIVERY_MODE=preview` until you intend to send.
 
-To enable only general-information replies:
+Cloudflare Email Sending is not available on the Workers Free plan. The outbound path for this account is Resend. The exact host edits are in [DEPLOY.md](DEPLOY.md). Summary:
 
-1. Onboard the sending domain in Cloudflare Email Sending and create an API token that can send. Arbitrary recipients need Workers Paid. `visa@boshen.dev` must be an allowed sender.
-2. Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_API_TOKEN` in the server environment, not in git.
-3. Set `DELIVERY_MODE=cloudflare` and `AUTO_REPLY=general_info`.
-4. Clerical worksheets, review cases, and out-of-scope mail stay in the outbox. Only `GENERAL_INFORMATION` is handed to the REST call, and only to the authenticated sender.
+1. Set `DELIVERY_MODE=resend`, `RESEND_API_KEY`, and `RESEND_FROM` (for example `Visa Helper (AI) <visa@boshen.dev>`) in the server environment, not in git. The process exits if the mode is `resend` and either value is missing.
+2. `reply_to` is `MAILBOX` (`visa@boshen.dev`). The recipient stays the allowlisted authenticated sender.
+3. Keep `AUTO_REPLY=off` to prove one draft by hand: `POST /v1/outbox/<id>/send` with `OPERATOR_TOKEN`, or `node --experimental-strip-types src/send-outbox.ts <id>`. Neither call takes a recipient.
+4. Set `AUTO_REPLY=general_info` only when general-information replies should go out on their own. Clerical worksheets, review cases, and out-of-scope mail stay in the outbox.
 
-Do not do this as part of copying the repo. This run did not.
+`DELIVERY_MODE=cloudflare` with `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_API_TOKEN` remains in the code for an account that can use Email Sending. This account cannot. Do not do either send path as part of copying the repo. This run did not.
 
 ## 3. Docker on the existing server
 
@@ -70,7 +70,7 @@ Do not add the host Docker socket. Do not set `AUTO_REPLY` to anything but `off`
 Facts checked against Cloudflare’s Email Service docs (pages updated October 2026):
 
 - Email Routing can send a message to a Worker’s `email()` handler or to a verified destination address. Routing works on Workers Free and Paid. It is not a general-purpose SMTP server for you to receive arbitrary mailboxes.
-- Email Sending (REST `POST /accounts/{account_id}/email/sending/send`, a `send_email` binding, or SMTP `smtp.mx.cloudflare.net:465` with an API token) is how outbound mail is submitted. Arbitrary recipients need Workers Paid and an onboarded sending domain. Until a domain is onboarded, sending is limited to verified destination addresses. This repo does not call any of those.
+- Email Sending (REST `POST /accounts/{account_id}/email/sending/send`, a `send_email` binding, or SMTP `smtp.mx.cloudflare.net:465` with an API token) is how Cloudflare submits outbound mail. Arbitrary recipients need Workers Paid and an onboarded sending domain. This account is on the Free plan, so that product is not the outbound path. The Node process calls Resend when `DELIVERY_MODE=resend`. It does not call the Cloudflare send binding or SMTP.
 - `message.reply()` answers the same sender inside the inbound event. Cloudflare requires a passing DMARC result, a recipient equal to the inbound sender, a single reply, and at most 100 `References` entries. The Worker in this repo does not call it.
 - Inbound messages over 25 MiB are rejected by Routing. This adapter rejects anything over 1 MiB before it reads the rest.
 

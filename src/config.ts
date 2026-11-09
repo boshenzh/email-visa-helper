@@ -19,10 +19,12 @@ export interface AppConfig {
   knowledgePath: string;
   vaultKey: string;
   deepseekApiKey: string;
-  deliveryMode: "preview" | "cloudflare";
+  deliveryMode: "preview" | "cloudflare" | "resend";
   autoReply: "off" | "general_info";
   cloudflareAccountId: string;
   cloudflareEmailToken: string;
+  resendApiKey: string;
+  resendFrom: string;
   publicLaunch: "blocked";
   killSwitch: boolean;
   caseTtlDays: number;
@@ -70,7 +72,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
       "DEEPSEEK_MODEL must be deepseek-flash or deepseek-v4-pro. Those are the Chat Completions model ids documented on 2026-11-08. Legacy aliases are not accepted here.",
     );
   }
-  const delivery = requiredLiteral(env, "DELIVERY_MODE", ["preview", "cloudflare"] as const, "preview");
+  const delivery = requiredLiteral(env, "DELIVERY_MODE", ["preview", "cloudflare", "resend"] as const, "preview");
   const autoReply = requiredLiteral(env, "AUTO_REPLY", ["off", "general_info"] as const, "off");
   const launch = requiredLiteral(env, "PUBLIC_LAUNCH", ["blocked"] as const, "blocked");
   const mode = requiredLiteral(env, "AGENT_MODE", ["mock", "live"] as const, "mock");
@@ -93,6 +95,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, overrides: Part
     autoReply,
     cloudflareAccountId: env.CLOUDFLARE_ACCOUNT_ID ?? "",
     cloudflareEmailToken: env.CLOUDFLARE_EMAIL_API_TOKEN ?? "",
+    resendApiKey: (env.RESEND_API_KEY ?? "").trim(),
+    resendFrom: (env.RESEND_FROM ?? "").trim(),
     publicLaunch: launch,
     killSwitch: (env.KILL_SWITCH ?? "off").trim() === "on",
     caseTtlDays: num(env, "CASE_TTL_DAYS", 30),
@@ -130,10 +134,13 @@ export function assertDeployment(config: AppConfig): void {
   if (config.publicLaunch !== "blocked") {
     throw new Error("PUBLIC_LAUNCH cannot be opened.");
   }
+  if (config.deliveryMode === "resend" && (!config.resendApiKey || !normalizeEmail(config.resendFrom))) {
+    throw new Error("DELIVERY_MODE=resend requires RESEND_API_KEY and RESEND_FROM.");
+  }
   if (config.profile === "dry_run") {
     if (config.mode !== "mock" || config.autoReply !== "off" || config.deliveryMode !== "preview") {
       throw new Error(
-        "dry_run refuses AGENT_MODE=live, AUTO_REPLY, and DELIVERY_MODE=cloudflare. Set DEPLOYMENT_PROFILE=synthetic_test and a non-empty TEST_SENDER_ALLOWLIST.",
+        "dry_run refuses AGENT_MODE=live, AUTO_REPLY, and DELIVERY_MODE=cloudflare or resend. Set DEPLOYMENT_PROFILE=synthetic_test and a non-empty TEST_SENDER_ALLOWLIST.",
       );
     }
     return;

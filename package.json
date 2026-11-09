@@ -11,7 +11,8 @@
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
     "sample": "node --experimental-strip-types scripts/sample.ts",
-    "synthetic": "node --experimental-strip-types src/synthetic-cli.ts"
+    "synthetic": "node --experimental-strip-types src/synthetic-cli.ts",
+    "send-outbox": "node --experimental-strip-types src/send-outbox.ts"
   },
   "devDependencies": {
     "@types/node": "^22.19.0",

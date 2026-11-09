@@ -6,8 +6,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "../src/config.ts";
 import { runSyntheticPublicAdapter, runPublicTopicLoop, buildChatBody, assertNoApplicantLeak, acceptGeneralExplanation } from "../src/deepseek.ts";
-import { cloudflareRestTransport, dispatchOutbox } from "../src/mail.ts";
-import { createServer } from "../src/http.ts";
+import { isOperatorLocalPeer, createServer } from "../src/http.ts";
+import { cloudflareRestTransport, dispatchOutbox, resendRestTransport, sendStoredDraft } from "../src/mail.ts";
 import { approveOutbox, deleteAuthorized } from "../src/inbound.ts";
 import { loadSnapshots } from "../src/knowledge.ts";
 import { safeJoin } from "../src/security.ts";
@@ -262,10 +262,18 @@ test("http auth, export token, sweep, and live mode still make no model call", a
   const base = `http://127.0.0.1:${address.port}`;
   try {
     const health = await fetch(`${base}/health`);
-    const healthBody = (await health.json()) as { autoReply: string; publicLaunch: string; modelCallsOnInbound: boolean };
+    const healthBody = (await health.json()) as {
+      autoReply: string;
+      publicLaunch: string;
+      modelCallsOnInbound: boolean;
+      resend: { state: string; from: string; replyTo: string };
+    };
     assert.equal(healthBody.autoReply, "off");
     assert.equal(healthBody.publicLaunch, "blocked");
     assert.equal(healthBody.modelCallsOnInbound, false);
+    assert.equal(healthBody.resend.state, "off");
+    assert.equal(healthBody.resend.from, "");
+    assert.equal(healthBody.resend.replyTo, "");
     const denied = await fetch(`${base}/v1/email/inbound`, { method: "POST", body: "{}" });
     assert.equal(denied.status, 401);
     const inbound = await fetch(`${base}/v1/email/inbound`, {
@@ -319,8 +327,36 @@ test("config rejects live-send switches and unknown model ids", () => {
   assert.throws(() => loadConfig({ DEEPSEEK_THINKING: "enabled" }), /DEEPSEEK_THINKING/);
   assert.throws(() => loadConfig({ DELIVERY_MODE: "smtp" }), /DELIVERY_MODE/);
   assert.throws(() => loadConfig({ AUTO_REPLY: "general_info", DELIVERY_MODE: "cloudflare" }), /dry_run refuses/);
+  assert.throws(() => loadConfig({ DELIVERY_MODE: "resend" }), /RESEND_API_KEY/);
+  assert.throws(() => loadConfig({ DELIVERY_MODE: "resend", RESEND_API_KEY: "re_test_not_real", RESEND_FROM: "not-an-email" }), /RESEND_FROM/);
+  assert.throws(
+    () => loadConfig({ DELIVERY_MODE: "resend", RESEND_API_KEY: "re_test_not_real", RESEND_FROM: "Visa Helper (AI) <visa@boshen.dev>" }),
+    /dry_run refuses/,
+  );
   assert.throws(() => loadConfig({ AGENT_MODE: "live" }), /dry_run refuses/);
   assert.throws(() => loadConfig({ DEPLOYMENT_PROFILE: "synthetic_test" }), /TEST_SENDER_ALLOWLIST/);
+  assert.throws(
+    () =>
+      loadConfig({
+        DEPLOYMENT_PROFILE: "synthetic_test",
+        TEST_SENDER_ALLOWLIST: "ops@example.com",
+        DELIVERY_MODE: "resend",
+        RESEND_FROM: "Visa Helper (AI) <visa@boshen.dev>",
+      }),
+    /RESEND_API_KEY/,
+  );
+  const resendReady = loadConfig({
+    DEPLOYMENT_PROFILE: "synthetic_test",
+    TEST_SENDER_ALLOWLIST: "ops@example.com",
+    DELIVERY_MODE: "resend",
+    RESEND_API_KEY: "re_test_not_real",
+    RESEND_FROM: "Visa Helper (AI) <visa@boshen.dev>",
+    AUTO_REPLY: "off",
+  });
+  assert.equal(resendReady.deliveryMode, "resend");
+  assert.equal(resendReady.autoReply, "off");
+  assert.equal(resendReady.publicLaunch, "blocked");
+  assert.equal(resendReady.resendFrom, "Visa Helper (AI) <visa@boshen.dev>");
   const testProfile = loadConfig(
     { DEPLOYMENT_PROFILE: "synthetic_test", TEST_SENDER_ALLOWLIST: "Ops <ops@example.com>" },
     {},
@@ -576,9 +612,12 @@ test("email sending retries, stays idempotent, and auto-reply is limited to gene
   const transport = cloudflareRestTransport("acct-test", "secret-token", async (url, init) => {
     fetches += 1;
     const headers = new Headers(init?.headers);
-    const body = JSON.parse(String(init?.body)) as { to: string };
+    const body = JSON.parse(String(init?.body)) as { to: string; reply_to?: string; headers?: unknown };
     assert.equal(String(url), "https://api.cloudflare.com/client/v4/accounts/acct-test/email/sending/send");
     assert.equal(headers.get("authorization"), "Bearer secret-token");
+    assert.equal(headers.get("idempotency-key"), null);
+    assert.equal(body.reply_to, undefined);
+    assert.equal(body.headers, undefined);
     assert.equal(JSON.stringify(body).includes("secret-token"), false);
     assert.equal(body.to, "synthetic@example.com");
     if (fetches === 1) return new Response("unavailable", { status: 503 });
@@ -713,6 +752,274 @@ test("synthetic_test allowlist gates intake and the operator topic endpoint", as
   } finally {
     await new Promise<void>((resolve, reject) => dryServer.close((error) => (error ? reject(error) : resolve())));
   }
+});
+
+test("resend sending retries, threads, and does not take Reply-To as the recipient", async () => {
+  const seen: Array<{ url: string; idempotencyKey: string | null; body: Record<string, unknown> }> = [];
+  let fetches = 0;
+  const apiKey = "re_test_not_real";
+  const transport = resendRestTransport(apiKey, async (url, init) => {
+    fetches += 1;
+    const headers = new Headers(init?.headers);
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    seen.push({ url: String(url), idempotencyKey: headers.get("idempotency-key"), body });
+    assert.equal(headers.get("authorization"), `Bearer ${apiKey}`);
+    assert.equal(JSON.stringify(body).includes(apiKey), false);
+    assert.equal(headers.get("idempotency-key") === null, false);
+    if (fetches < 3) return new Response("rate limited", { status: fetches === 1 ? 429 : 503 });
+    return Response.json({ id: "re_msg_1" });
+  });
+  const runtime = tempRuntime();
+  const created = await send(runtime, {
+    messageId: "resend-thread",
+    replyTo: "attacker@evil.example",
+    inReplyTo: "<parent@example.com>",
+    references: ["<root@example.com>", "<parent@example.com>"],
+    text: "What is the Standard Visitor fee?",
+  });
+  const draft = runtime.store.readOutbox(created.outboxId ?? "");
+  assert.equal(draft?.status, "draft");
+  assert.equal(draft?.to, "synthetic@example.com");
+  assert.equal(draft?.inReplyTo, "resend-thread@example.com");
+  const allow = ["synthetic@example.com"];
+  const sent = await dispatchOutbox(
+    runtime.store,
+    draft!,
+    transport,
+    "Visa Helper (AI) <visa@boshen.dev>",
+    allow,
+    "visa@boshen.dev",
+  );
+  assert.equal(sent.status, "sent");
+  assert.equal(sent.providerMessageId, "re_msg_1");
+  assert.equal(fetches, 3);
+  assert.equal(seen.length, 3);
+  assert.equal(seen[0]?.url, "https://api.resend.com/emails");
+  assert.equal(seen[0]?.idempotencyKey, draft?.id);
+  assert.notEqual(seen[0]?.idempotencyKey, draft?.idempotencyKey);
+  assert.deepEqual(seen[0]?.body, {
+    from: "Visa Helper (AI) <visa@boshen.dev>",
+    to: ["synthetic@example.com"],
+    subject: draft?.subject,
+    text: draft?.text,
+    reply_to: "visa@boshen.dev",
+    headers: {
+      "In-Reply-To": "<resend-thread@example.com>",
+      References: "<root@example.com> <parent@example.com> <resend-thread@example.com>",
+    },
+  });
+  assert.equal(JSON.stringify(seen[0]?.body).includes("attacker@evil.example"), false);
+  assert.equal(seen[1]?.idempotencyKey, draft?.id);
+  assert.equal(seen[2]?.idempotencyKey, draft?.id);
+  const again = await dispatchOutbox(runtime.store, sent, transport, "Visa Helper (AI) <visa@boshen.dev>", allow, "visa@boshen.dev");
+  assert.equal(again.status, "sent");
+  assert.equal(fetches, 3);
+  const queued = runtime.store.readOutbox(sent.id)!;
+  queued.status = "queued";
+  queued.providerMessageId = null;
+  runtime.store.writeOutbox(queued);
+  const held = await dispatchOutbox(runtime.store, queued, transport, "Visa Helper (AI) <visa@boshen.dev>", allow, "visa@boshen.dev");
+  assert.equal(held.status, "queued");
+  assert.equal(fetches, 3);
+
+  const permanent = resendRestTransport(apiKey, async () => new Response("bad", { status: 400 }));
+  const other = await send(runtime, { messageId: "resend-fail", replyTo: "attacker@evil.example", text: "What is the Standard Visitor fee?" });
+  const failed = await dispatchOutbox(
+    runtime.store,
+    runtime.store.readOutbox(other.outboxId ?? "")!,
+    permanent,
+    "Visa Helper (AI) <visa@boshen.dev>",
+    allow,
+    "visa@boshen.dev",
+  );
+  assert.equal(failed.status, "failed");
+  assert.equal(runtime.store.readOutbox(failed.id)?.attempts, 1);
+  assert.equal(readLog(runtime).includes(apiKey), false);
+  assert.equal(JSON.stringify(runtime.store.readOutbox(sent.id)).includes(apiKey), false);
+});
+
+test("operator send delivers one allowlisted draft while automatic replies stay off", async () => {
+  let calls = 0;
+  const runtime = tempRuntime({
+    profile: "synthetic_test",
+    testSenderAllowlist: ["synthetic@example.com"],
+    autoReply: "off",
+    deliveryMode: "resend",
+    resendApiKey: "re_test_not_real",
+    resendFrom: "Visa Helper (AI) <visa@boshen.dev>",
+  });
+  runtime.mailTransport = {
+    async send(message) {
+      calls += 1;
+      assert.equal(message.to, "synthetic@example.com");
+      assert.equal(message.from, "Visa Helper (AI) <visa@boshen.dev>");
+      assert.equal(message.replyTo, "visa@boshen.dev");
+      assert.equal(message.idempotencyKey.length, 32);
+      return { messageId: "hand-1" };
+    },
+  };
+  const created = await send(runtime, { messageId: "hand-send", replyTo: "attacker@evil.example", text: "What is the Standard Visitor fee?" });
+  assert.equal(runtime.store.readOutbox(created.outboxId ?? "")?.status, "draft");
+  assert.equal(calls, 0);
+  const personal = await send(runtime, { messageId: "hand-personal", text: "Am I eligible for a visitor visa?" });
+  assert.equal(runtime.store.readOutbox(personal.outboxId ?? "")?.status, "draft");
+  assert.equal(calls, 0);
+
+  const server = createServer(runtime);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no port");
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const health = (await (await fetch(`${base}/health`)).json()) as {
+      delivery: string;
+      emailSending: boolean;
+      autoReply: string;
+      publicLaunch: string;
+      resend: { state: string; from: string; replyTo: string };
+    };
+    assert.equal(health.delivery, "resend");
+    assert.equal(health.emailSending, false);
+    assert.equal(health.autoReply, "off");
+    assert.equal(health.publicLaunch, "blocked");
+    assert.deepEqual(health.resend, {
+      state: "manual",
+      from: "Visa Helper (AI) <visa@boshen.dev>",
+      replyTo: "visa@boshen.dev",
+    });
+    const denied = await fetch(`${base}/v1/outbox/${created.outboxId}/send`, { method: "POST" });
+    assert.equal(denied.status, 401);
+    const ingress = await fetch(`${base}/v1/outbox/${created.outboxId}/send`, {
+      method: "POST",
+      headers: { authorization: "Bearer ingress-token-for-tests-0123456789" },
+    });
+    assert.equal(ingress.status, 401);
+    const injected = await fetch(`${base}/v1/outbox/${created.outboxId}/send`, {
+      method: "POST",
+      headers: { authorization: "Bearer operator-token-for-tests-0123456789", "content-type": "application/json" },
+      body: JSON.stringify({ to: "attacker@evil.example", reply_to: "attacker@evil.example" }),
+    });
+    assert.equal(injected.status, 400);
+    assert.equal(calls, 0);
+    const sent = await fetch(`${base}/v1/outbox/${created.outboxId}/send`, {
+      method: "POST",
+      headers: { authorization: "Bearer operator-token-for-tests-0123456789" },
+    });
+    const payload = (await sent.json()) as { status: string; providerMessageId: string; to: string };
+    assert.equal(sent.status, 200);
+    assert.equal(payload.status, "sent");
+    assert.equal(payload.providerMessageId, "hand-1");
+    assert.equal(payload.to, "synthetic@example.com");
+    assert.equal(calls, 1);
+    const repeat = await fetch(`${base}/v1/outbox/${created.outboxId}/send`, {
+      method: "POST",
+      headers: { authorization: "Bearer operator-token-for-tests-0123456789" },
+    });
+    assert.equal(((await repeat.json()) as { status: string }).status, "sent");
+    assert.equal(calls, 1);
+    const blocked = await sendStoredDraft(runtime.store, runtime.config, runtime.mailTransport ?? null, personal.outboxId ?? "");
+    assert.equal(blocked.to, "synthetic@example.com");
+    const tampered = runtime.store.readOutbox(personal.outboxId ?? "")!;
+    tampered.to = "attacker@evil.example";
+    tampered.status = "draft";
+    runtime.store.writeOutbox(tampered);
+    const refused = await sendStoredDraft(runtime.store, runtime.config, runtime.mailTransport ?? null, tampered.id);
+    assert.equal(refused.status, "draft");
+    assert.equal(calls, 2);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  }
+});
+
+test("automatic resend stays on general information for an allowlisted sender", async () => {
+  const sentTo: string[] = [];
+  const auto = tempRuntime({
+    profile: "synthetic_test",
+    testSenderAllowlist: ["synthetic@example.com"],
+    autoReply: "general_info",
+    deliveryMode: "resend",
+    resendApiKey: "re_test_not_real",
+    resendFrom: "Visa Helper (AI) <visa@boshen.dev>",
+  });
+  auto.mailTransport = {
+    async send(message) {
+      sentTo.push(message.to);
+      assert.equal(message.replyTo, "visa@boshen.dev");
+      assert.equal(message.from, "Visa Helper (AI) <visa@boshen.dev>");
+      return { messageId: "auto-resend-1" };
+    },
+  };
+  const general = await send(auto, { messageId: "resend-auto-fee", replyTo: "attacker@evil.example", text: "What is the Standard Visitor fee?" });
+  assert.equal(auto.store.readOutbox(general.outboxId ?? "")?.status, "sent");
+  const personal = await send(auto, { messageId: "resend-auto-personal", text: "Am I eligible for a visitor visa?" });
+  assert.equal(auto.store.readOutbox(personal.outboxId ?? "")?.status, "draft");
+  assert.deepEqual(sentTo, ["synthetic@example.com"]);
+  const outsider = await send(auto, {
+    messageId: "resend-outsider",
+    headerFrom: "Outsider <outsider@example.com>",
+    replyTo: "synthetic@example.com",
+    text: "What is the Standard Visitor fee?",
+  });
+  assert.equal(outsider.action, "rejected");
+  assert.deepEqual(sentTo, ["synthetic@example.com"]);
+});
+
+test("operator send route and cli stay closed without the synthetic test profile", async () => {
+  assert.equal(isOperatorLocalPeer("127.0.0.1"), true);
+  assert.equal(isOperatorLocalPeer("::1"), true);
+  assert.equal(isOperatorLocalPeer("::ffff:127.0.0.1"), true);
+  assert.equal(isOperatorLocalPeer("172.18.0.2"), true);
+  assert.equal(isOperatorLocalPeer("10.1.2.3"), true);
+  assert.equal(isOperatorLocalPeer("8.8.8.8"), false);
+  assert.equal(isOperatorLocalPeer("2001:4860:4860::8888"), false);
+  assert.equal(isOperatorLocalPeer(undefined), false);
+  const dry = tempRuntime();
+  dry.mailTransport = {
+    async send() {
+      throw new Error("dry_run must not send");
+    },
+  };
+  await assert.rejects(() => sendStoredDraft(dry.store, dry.config, dry.mailTransport ?? null, "a".repeat(32)), /synthetic_test/);
+  const child = spawn(process.execPath, ["--experimental-strip-types", "src/send-outbox.ts", "a".repeat(32)], {
+    cwd: root,
+    env: { PATH: process.env.PATH ?? "", DEPLOYMENT_PROFILE: "dry_run", DELIVERY_MODE: "resend" },
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8");
+  });
+  const code: number = await new Promise((resolve) => {
+    child.on("close", (status) => resolve(status ?? 1));
+  });
+  assert.notEqual(code, 0);
+  assert.match(stderr, /RESEND_API_KEY/);
+});
+
+test("startup exits when resend is selected without credentials", async () => {
+  const child = spawn(process.execPath, ["--experimental-strip-types", "src/index.ts"], {
+    cwd: root,
+    env: {
+      PATH: process.env.PATH ?? "",
+      DEPLOYMENT_PROFILE: "synthetic_test",
+      TEST_SENDER_ALLOWLIST: "ops@example.com",
+      DELIVERY_MODE: "resend",
+      AUTO_REPLY: "off",
+      PORT: "0",
+    },
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString("utf8");
+  });
+  const timer = setTimeout(() => child.kill(), 5000);
+  const code: number = await new Promise((resolve) => {
+    child.on("close", (status) => resolve(status ?? 1));
+  });
+  clearTimeout(timer);
+  assert.notEqual(code, 0);
+  assert.match(stderr, /RESEND_API_KEY/);
+  assert.match(stderr, /RESEND_FROM/);
+  assert.equal(stderr.includes("listening"), false);
 });
 
 test("synthetic cli refuses the dry-run profile and does not need a key to fail closed", async () => {
