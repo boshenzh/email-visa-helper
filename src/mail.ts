@@ -1,4 +1,5 @@
 import type { AppConfig } from "./config.ts";
+import { normalizeEmail } from "./security.ts";
 import type { Store } from "./store.ts";
 import type { OutboxDraft } from "./types.ts";
 
@@ -10,7 +11,14 @@ export interface OutboundMessage {
   from: string;
   subject: string;
   text: string;
+  /** Outbox id. The Resend adapter sends this as the Idempotency-Key HTTP header. */
   idempotencyKey: string;
+  /** Configured mailbox, never the inbound Reply-To header. */
+  replyTo: string;
+  inReplyTo: string;
+  references: string[];
+  /** Raw file text. The Resend adapter base64-encodes it into attachments. */
+  attachments?: { filename: string; contentType: string; content: string }[];
 }
 
 export interface EmailTransport {
@@ -62,16 +70,144 @@ export function cloudflareRestTransport(accountId: string, token: string, fetchI
   };
 }
 
+/**
+ * Resend REST API. POST https://api.resend.com/emails
+ * Used when Cloudflare Email Sending is unavailable (Workers Free).
+ * The Idempotency-Key HTTP header is the outbox id. It is not an email header.
+ * reply_to is the configured mailbox. The recipient is the message `to`, already allowlisted.
+ */
+export function resendRestTransport(apiKey: string, fetchImpl: typeof fetch): EmailTransport {
+  return {
+    async send(message) {
+      const emailHeaders: Record<string, string> = {};
+      const inReplyTo = bracketMessageId(message.inReplyTo);
+      if (inReplyTo) emailHeaders["In-Reply-To"] = inReplyTo;
+      const references = message.references.map(bracketMessageId).filter((id): id is string => Boolean(id));
+      if (references.length > 0) emailHeaders.References = references.join(" ");
+      const body: Record<string, unknown> = {
+        from: message.from,
+        to: [message.to],
+        subject: message.subject.replace(/[\r\n]+/g, " ").slice(0, 300),
+        text: message.text,
+      };
+      if (message.replyTo) body.reply_to = message.replyTo;
+      if (Object.keys(emailHeaders).length > 0) body.headers = emailHeaders;
+      if (message.attachments && message.attachments.length > 0) {
+        body.attachments = message.attachments.map((file) => ({
+          filename: file.filename,
+          content: Buffer.from(file.content, "utf8").toString("base64"),
+          content_type: file.contentType,
+        }));
+      }
+      const encoded = JSON.stringify(body);
+      let last: Error = new MailTransientError("send failed");
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const response = await fetchImpl("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${apiKey}`,
+            "content-type": "application/json",
+            "Idempotency-Key": message.idempotencyKey,
+          },
+          body: encoded,
+        });
+        if (response.status === 429 || response.status >= 500) {
+          await response.arrayBuffer().catch(() => undefined);
+          last = new MailTransientError(`status ${response.status}`);
+          continue;
+        }
+        const payload = (await response.json().catch(() => ({}))) as { id?: string };
+        if (!response.ok || typeof payload.id !== "string" || payload.id.length === 0) {
+          throw new MailPermanentError(`status ${response.status}`);
+        }
+        return { messageId: payload.id };
+      }
+      throw last;
+    },
+  };
+}
+
+/** Process transport. Resend stays available when AUTO_REPLY=off so an operator can send one stored draft. Cloudflare is built whenever automatic sending is on. */
+export function configuredTransport(config: AppConfig, fetchImpl: typeof fetch): EmailTransport | null {
+  if (config.profile !== "synthetic_test" || config.publicLaunch !== "blocked" || config.testSenderAllowlist.length === 0) {
+    return null;
+  }
+  if (config.deliveryMode === "resend" && config.resendApiKey && normalizeEmail(config.resendFrom)) {
+    return resendRestTransport(config.resendApiKey, fetchImpl);
+  }
+  if (
+    config.deliveryMode === "cloudflare" &&
+    config.autoReply !== "off" &&
+    config.cloudflareAccountId &&
+    config.cloudflareEmailToken
+  ) {
+    return cloudflareRestTransport(config.cloudflareAccountId, config.cloudflareEmailToken, fetchImpl);
+  }
+  return null;
+}
+
+export function resendDeliveryState(config: AppConfig, transportReady: boolean): "off" | "manual" | "auto" {
+  if (config.deliveryMode !== "resend" || !transportReady || !config.resendApiKey || !normalizeEmail(config.resendFrom)) return "off";
+  if (config.profile !== "synthetic_test" || config.publicLaunch !== "blocked") return "off";
+  return config.autoReply === "off" ? "manual" : "auto";
+}
+
+const AUTO_ALL_REASONS = new Set([
+  "GENERAL_INFORMATION",
+  "CLERICAL_APPLICANT_CONTROLLED",
+  "REGULATED_REVIEW_REQUIRED",
+  "OUT_OF_SCOPE",
+  "rate_limit",
+  "deleted",
+  "delete_refused",
+]);
+
+/** general_info sends one category. all sends every customer reply to an allowlisted authenticated sender. */
+export function shouldAutoSend(config: AppConfig, draft: OutboxDraft): boolean {
+  if (config.autoReply === "off" || config.profile !== "synthetic_test" || config.publicLaunch !== "blocked") return false;
+  if (config.deliveryMode !== "cloudflare" && config.deliveryMode !== "resend") return false;
+  if (draft.status === "suppressed" || draft.status === "held_unverified") return false;
+  if (!draft.to || !config.testSenderAllowlist.includes(draft.to)) return false;
+  if (config.autoReply === "general_info") return draft.reason === "GENERAL_INFORMATION";
+  if (config.autoReply === "all") return AUTO_ALL_REASONS.has(draft.reason);
+  return false;
+}
+
 export async function maybeAutoSend(store: Store, draft: OutboxDraft, config: AppConfig, transport: EmailTransport | null): Promise<OutboxDraft> {
-  if (config.autoReply !== "general_info" || config.deliveryMode !== "cloudflare") return draft;
-  if (draft.reason !== "GENERAL_INFORMATION" || !draft.to) return draft;
-  if (config.profile !== "synthetic_test") return draft;
-  if (!config.testSenderAllowlist.includes(draft.to)) return draft;
+  if (!shouldAutoSend(config, draft)) return draft;
   if (!transport) {
     store.log("send_not_configured", { outboxId: draft.id });
     return draft;
   }
-  return dispatchOutbox(store, draft, transport, config.mailbox, config.testSenderAllowlist);
+  return dispatchOutbox(store, draft, transport, senderFrom(config), config.testSenderAllowlist, config.mailbox);
+}
+
+/** Operator hand send of one stored draft. Ignores AUTO_REPLY. The recipient is the address already on the row. */
+export async function sendStoredDraft(
+  store: Store,
+  config: AppConfig,
+  transport: EmailTransport | null,
+  outboxId: string,
+): Promise<OutboxDraft> {
+  if (config.publicLaunch !== "blocked") throw new MailPermanentError("public launch is blocked");
+  if (config.profile !== "synthetic_test") throw new MailPermanentError("synthetic_test profile required");
+  if (!transport) throw new MailPermanentError("send not configured");
+  if (!/^[a-f0-9]{32}$/.test(outboxId)) throw new MailPermanentError("outbox item not found");
+  const draft = store.readOutbox(outboxId);
+  if (!draft) throw new MailPermanentError("outbox item not found");
+  return dispatchOutbox(store, draft, transport, senderFrom(config), config.testSenderAllowlist, config.mailbox);
+}
+
+function senderFrom(config: AppConfig): string {
+  return config.deliveryMode === "resend" ? config.resendFrom : config.mailbox;
+}
+
+function bracketMessageId(id: string): string | null {
+  const trimmed = id.trim();
+  if (!trimmed || trimmed.length > 200 || /[\r\n\0]/.test(trimmed) || /[^\x21-\x7e]/.test(trimmed)) return null;
+  const bare = trimmed.replace(/^<|>$/g, "");
+  if (!bare || bare.includes("<") || bare.includes(">") || /\s/.test(bare)) return null;
+  return `<${bare}>`;
 }
 
 /** Sends only the address already stored on the draft. A second call after success does not send again. */
@@ -81,10 +217,10 @@ export async function dispatchOutbox(
   transport: EmailTransport,
   from: string,
   allowlist: readonly string[],
+  replyTo = "",
 ): Promise<OutboxDraft> {
   const current = store.readOutbox(draft.id) ?? draft;
-  if (current.status === "sent" && current.providerMessageId) return current;
-  if (current.status === "queued") return current;
+  if (current.status === "sent" || current.status === "queued") return current;
   if (!current.to) throw new MailPermanentError("missing recipient");
   if (!allowlist.includes(current.to)) {
     store.log("send_blocked", { outboxId: current.id, reason: "recipient_not_allowlisted" });
@@ -103,7 +239,13 @@ export async function dispatchOutbox(
       from,
       subject: current.subject,
       text: current.text,
-      idempotencyKey: current.idempotencyKey,
+      idempotencyKey: current.id,
+      replyTo,
+      inReplyTo: current.inReplyTo,
+      references: current.references,
+      attachments: current.packFile
+        ? [{ filename: current.packFile.filename, contentType: current.packFile.contentType, content: current.packFile.text }]
+        : undefined,
     });
     const sent: OutboxDraft = { ...queued, status: "sent", providerMessageId: result.messageId };
     store.writeOutbox(sent);

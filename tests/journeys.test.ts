@@ -223,11 +223,31 @@ test("a vague preparation request asks for the missing facts instead of the omni
     text: "I want to visit UK, help me prepare.",
   });
   assert.equal(result.category, "CLERICAL_APPLICANT_CONTROLLED");
+  assert.match(result.reply, /Step 1 of 6/);
   assert.match(result.reply, /nationality/i);
-  assert.match(result.reply, /arrival and departure dates/i);
   assert.match(result.reply, /AI preparation assistant/);
+  assert.match(result.reply, /not a human/i);
+  assert.equal((result.reply.match(/ordinary passport/gi) ?? []).length, 1);
+  assert.doesNotMatch(result.reply, /not sent automatically/);
   assert.doesNotMatch(result.reply, /£506/);
   assert.ok(result.reply.length < 2200, `prepare reply too long: ${result.reply.length}`);
+});
+
+test("a bare greeting starts step 1 instead of asking for a question", async () => {
+  const runtime = tempRuntime();
+  const result = await send(runtime, { messageId: "just-hi", subject: "hi", text: "hi" });
+  assert.equal(result.category, "GENERAL_INFORMATION");
+  assert.equal(result.modelRequests, 0);
+  assert.equal(runtime.store.readCase(result.caseId ?? "")?.stage, "INTAKE");
+  assert.match(result.reply, /Step 1 of 6/);
+  assert.match(result.reply, /AI preparation assistant/);
+  assert.match(result.reply, /not a human/i);
+  assert.match(result.reply, /not a regulated immigration adviser/);
+  assert.match(result.reply, /nationality/i);
+  assert.equal((result.reply.match(/ordinary passport/gi) ?? []).length, 1);
+  assert.match(result.reply, /passport scans/);
+  assert.doesNotMatch(result.reply, /reply with your question/i);
+  assert.doesNotMatch(result.reply, /not sent automatically/);
 });
 
 test("a mocked provider failure still returns the local fee snapshot", async () => {

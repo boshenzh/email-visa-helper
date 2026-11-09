@@ -38,6 +38,18 @@ test("mime parser keeps text, drops html, and does not return attachment bytes",
   assert.equal(String(parsed.attachments[0].content ?? ""), "");
 });
 
+test("an HTML-only body becomes text", () => {
+  const raw = [
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    "<p>I want to visit the UK as a tourist.</p>",
+  ].join("\r\n");
+  const parsed = extractTextPlain(raw);
+  assert.match(parsed.text, /visit the UK as a tourist/);
+  assert.equal(parsed.htmlIgnored, false);
+  assert.doesNotMatch(parsed.text, /<p>/);
+});
+
 test("worker source does not send mail", () => {
   const source = fs.readFileSync(path.join(root, "cloudflare/src/index.js"), "utf8");
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");

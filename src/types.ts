@@ -44,6 +44,21 @@ export interface InboundEvent {
   referenceCount: number;
 }
 
+export type PrepStage =
+  | "INTAKE"
+  | "ROUTE_CHECK"
+  | "PURPOSE_AND_TRIP"
+  | "DOCUMENT_CHECKLIST"
+  | "DOCUMENT_TRACKING"
+  | "SUPPORTING_LETTERS"
+  | "FINAL_PACK"
+  | "DONE"
+  | "ESCALATED";
+
+export type DocStatus = "ready" | "pending" | "missing";
+
+export type ReplyLanguage = "en" | "zh";
+
 export interface CheckerStatement {
   result: "visa" | "eta" | "neither" | "unknown";
   date: string;
@@ -66,6 +81,12 @@ export interface VaultFacts {
   criminal: "yes" | "no" | "unsure" | "unknown";
   passportNumberPresent: boolean;
   bankDetailPresent: boolean;
+  /** What the customer says they already have. Never a scan. */
+  documents: Record<string, DocStatus>;
+  docsAnswered: boolean;
+  draftAccepted: boolean;
+  travellerCount: number;
+  travellerNote: string;
 }
 
 export interface CaseRecord {
@@ -84,6 +105,11 @@ export interface CaseRecord {
   artifactNames: string[];
   consentNoticeShown: boolean;
   vaultMode: "aes-256-gcm" | "plaintext-demo";
+  stage: PrepStage;
+  language: ReplyLanguage;
+  packHash: string;
+  checklistDelivered: boolean;
+  lettersDelivered: boolean;
 }
 
 export interface PublicView {
@@ -111,6 +137,8 @@ export interface OutboxDraft {
   createdAt: string;
   inReplyTo: string;
   references: string[];
+  /** Markdown pack attached on the Resend send. Null until FINAL_PACK. */
+  packFile: { filename: string; contentType: string; text: string } | null;
 }
 
 export interface InboundResult {

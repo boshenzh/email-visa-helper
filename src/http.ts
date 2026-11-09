@@ -2,6 +2,7 @@ import http from "node:http";
 import { runPublicTopicLoop } from "./deepseek.ts";
 import { approveOutbox, deleteAuthorized, handleInbound, type Runtime } from "./inbound.ts";
 import { loadSnapshots, OFFICIAL_TOPICS, type OfficialTopic } from "./knowledge.ts";
+import { MailPermanentError, resendDeliveryState, sendStoredDraft } from "./mail.ts";
 import { sha256, tokensMatch } from "./security.ts";
 import type { Store } from "./store.ts";
 
@@ -25,7 +26,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, runti
       delivery: runtime.config.deliveryMode,
       publicLaunch: runtime.config.publicLaunch,
       modelCallsOnInbound: Boolean(runtime.modelTransport),
-      emailSending: Boolean(runtime.mailTransport),
+      emailSending: runtime.config.autoReply !== "off" && Boolean(runtime.mailTransport),
+      resend: {
+        state: resendDeliveryState(runtime.config, Boolean(runtime.mailTransport)),
+        from: runtime.config.deliveryMode === "resend" ? runtime.config.resendFrom : "",
+        replyTo: runtime.config.deliveryMode === "resend" ? runtime.config.mailbox : "",
+      },
       testSenderAllowlistCount: runtime.config.testSenderAllowlist.length,
     });
     return;
@@ -100,6 +106,25 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, runti
     sendJson(res, 200, approveOutbox(runtime.store, approve[1]));
     return;
   }
+  const operatorSend = /^\/v1\/outbox\/([a-f0-9]{32})\/send$/.exec(url.pathname);
+  if (req.method === "POST" && operatorSend) {
+    if (!isOperatorLocalPeer(req.socket.remoteAddress)) return sendJson(res, 403, { ok: false, error: "local only" });
+    if (!authorized(req, runtime.config.operatorToken)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
+    const raw = await readBody(req);
+    if (raw.trim() && raw.trim() !== "{}") return sendJson(res, 400, { ok: false, error: "recipient is the stored draft address" });
+    try {
+      const draft = await sendStoredDraft(runtime.store, runtime.config, runtime.mailTransport ?? null, operatorSend[1]);
+      sendJson(res, 200, draft);
+    } catch (error) {
+      if (error instanceof MailPermanentError) {
+        const status = /not found/.test(error.message) ? 404 : /not configured/.test(error.message) ? 503 : 403;
+        sendJson(res, status, { ok: false, error: error.message });
+        return;
+      }
+      throw error;
+    }
+    return;
+  }
   const remove = /^\/v1\/cases\/([a-f0-9]{64})\/delete$/.exec(url.pathname);
   if (req.method === "POST" && remove) {
     if (!authorized(req, runtime.config.operatorToken)) return sendJson(res, 401, { ok: false, error: "unauthorized" });
@@ -114,6 +139,25 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse, runti
     return;
   }
   sendJson(res, 404, { ok: false, error: "not found" });
+}
+
+/** Loopback and private peers only. A public client is refused even if the port was published. */
+export function isOperatorLocalPeer(address: string | undefined): boolean {
+  if (!address) return false;
+  const raw = address.trim().toLowerCase();
+  if (raw === "::1") return true;
+  const ip = raw.startsWith("::ffff:") ? raw.slice("::ffff:".length) : raw;
+  if (ip.includes(":") && (ip === "::1" || ip.startsWith("fe80:") || ip.startsWith("fc") || ip.startsWith("fd"))) return true;
+  const parts = ip.split(".");
+  if (parts.length !== 4) return false;
+  const nums = parts.map((part) => Number(part));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return false;
+  const a = nums[0] ?? -1;
+  const b = nums[1] ?? -1;
+  if (a === 127 || a === 10) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
 }
 
 function authorized(req: http.IncomingMessage, expected: string): boolean {
